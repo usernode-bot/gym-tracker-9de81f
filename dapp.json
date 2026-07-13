@@ -7,6 +7,8 @@
     { "name": "Home renders for real user", "path": "/", "expectText": "Start workout" },
     { "name": "Theme switcher renders", "path": "/", "expectSelector": "[data-action=\"set-theme\"]" },
     { "name": "Swipeable session rows render", "path": "/?demo=1", "expectSelector": "[data-swipe]" },
-    { "name": "Desktop keeps X delete buttons", "path": "/?demo=1", "expectSelector": ".x-delete" }
+    { "name": "Desktop keeps X delete buttons", "path": "/?demo=1", "expectSelector": ".x-delete" },
+    { "name": "Import/export footer renders", "path": "/?demo=1", "expectText": "Export JSON" },
+    { "name": "Import button renders", "path": "/", "expectSelector": "[data-action=\"import-json\"]" }
   ]
 }

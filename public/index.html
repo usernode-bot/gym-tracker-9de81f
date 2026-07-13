@@ -183,9 +183,11 @@
       if (s.set_type === 'reps') return s.reps + ' × ' + fmtW(s.weight);
       return fmtDur(s.duration_seconds) + (s.effort ? ' · ' + s.effort : '');
     }
-    function toast(msg) {
+    function toast(msg, ok) {
       const t = document.getElementById('toast');
       t.textContent = msg;
+      t.classList.toggle('bg-red-500/90', !ok);
+      t.classList.toggle('bg-emerald-600/90', !!ok);
       t.classList.remove('hidden');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => t.classList.add('hidden'), 3500);
@@ -235,7 +237,12 @@
           ${themeSwitcherHtml()}
         </header>
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
-        <div class="space-y-2">${rows}</div>`;
+        <div class="space-y-2">${rows}</div>
+        <div class="flex justify-center gap-6 mt-6">
+          <button data-action="export-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
+          <button data-action="import-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
+        </div>
+        <input id="import-file" type="file" accept="application/json,.json" class="hidden">`;
     }
 
     function setFormHtml() {
@@ -389,6 +396,48 @@
         si.addEventListener('input', () => { picker.query = si.value; renderPickerList(); });
         si.focus();
         renderPickerList();
+      }
+      const fi = document.getElementById('import-file');
+      if (fi) fi.addEventListener('change', onImportFile);
+    }
+
+    // ---------- import / export ----------
+    async function exportJson() {
+      // Can't use api(): the response is a file, not JSON to consume.
+      const res = await fetch('/api/export' + (demo ? '?demo=1' : ''), { headers: authHeaders });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Export failed (' + res.status + ')');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'gym-tracker-export-' + new Date().toISOString().slice(0, 10) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function onImportFile(e) {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = ''; // allow re-picking the same file
+      if (!file) return;
+      let data;
+      try { data = JSON.parse(await file.text()); }
+      catch (_) { toast('That file is not valid JSON'); return; }
+      const list = Array.isArray(data) ? data : (data && Array.isArray(data.sessions) ? data.sessions : null);
+      if (!list) { toast('Expected a gym-tracker export with a sessions array'); return; }
+      if (!list.length) { toast('No sessions in that file'); return; }
+      if (!confirm('Import ' + list.length + ' session' + (list.length === 1 ? '' : 's') + ' from this file?')) return;
+      try {
+        const r = await api('POST', '/api/import', data);
+        await loadHome();
+        toast('Imported ' + r.imported + ' workout' + (r.imported === 1 ? '' : 's') +
+          (r.skipped ? ' (' + r.skipped + ' duplicate' + (r.skipped === 1 ? '' : 's') + ' skipped)' : ''), true);
+      } catch (err) {
+        toast(err.message);
       }
     }
 
@@ -673,7 +722,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'export-json', 'import-json']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -766,6 +815,12 @@
           break;
         case 'undo-delete':
           undoPendingDelete();
+          break;
+        case 'export-json':
+          await exportJson();
+          break;
+        case 'import-json':
+          document.getElementById('import-file').click();
           break;
       }
     }
