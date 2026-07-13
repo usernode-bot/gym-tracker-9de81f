@@ -28,11 +28,34 @@ tables you've marked private), etc.
 
 ## About Gym Tracker
 
-_(add a sentence or two of product context here so Claude Code has a
-shared understanding of what this app is for)_
+A personal workout log. Users start a timestamped **workout session**,
+add **exercises** to it (from their own most-recently-used list, or by
+creating a new one), and log **sets** per exercise — either reps ×
+weight or time × effort. Exercise entries and individual sets can
+carry optional notes. Each exercise card shows a "Last time" panel
+(the sets from that exercise's most recent earlier session), and a
+client-side count-up rest stopwatch sits at the bottom of the session
+view. All workout data is strictly private per user.
 
 ## App-specific conventions
 
-_(optional — e.g. "all currency values stored as integer cents, not
-floats"; "the `posts` table is append-only"; "avoid adding new
-dependencies"; etc.)_
+- **All four workout tables are `staging:private`**: `exercises`,
+  `workout_sessions`, `session_exercises`, `sets`. Every row is
+  per-user content; staging gets schema only. Staging demo data is
+  seeded idempotently on boot under fake `user_id = 900001` (ids
+  900001+), surfaced read-only via `?demo=1` on GET routes.
+- **Weight is unit-agnostic** — a bare NUMERIC, displayed as entered.
+  No kg/lb column or conversion.
+- **Sets are one of two shapes** (`set_type`): `'reps'` populates
+  `reps` + `weight`; `'time'` populates `duration_seconds` + optional
+  free-text `effort`. The other type's columns are NULL — keep that
+  convention when editing.
+- **Exercises are per-user** (no shared catalog), deduped
+  case-insensitively via a unique index on `(user_id, lower(name))`.
+  `POST /api/exercises` is create-or-get, never a duplicate error.
+- **Ownership checks join up to `workout_sessions.user_id`** and
+  return 404 (not 403) for other users' rows.
+- The legacy `presses` table from the scaffold demo is unused — don't
+  recreate it, but don't `DROP` it either (prod data is left alone).
+- The rest stopwatch is deliberately client-side only (no schema, no
+  API) and counts **up**; a countdown timer is future work.
