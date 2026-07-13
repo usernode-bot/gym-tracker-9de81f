@@ -5,6 +5,7 @@
   "tests": [
     { "name": "Home renders with demo data", "path": "/?demo=1", "expectText": "Staging demo" },
     { "name": "Home renders for real user", "path": "/", "expectText": "Start workout" },
-    { "name": "Theme switcher renders", "path": "/", "expectSelector": "[data-action=\"set-theme\"]" }
+    { "name": "Theme switcher renders", "path": "/", "expectSelector": "[data-action=\"set-theme\"]" },
+    { "name": "Swipeable session rows render", "path": "/?demo=1", "expectSelector": "[data-swipe]" }
   ]
 }
