@@ -70,6 +70,12 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
 
+  <!-- Keep vertical scrolling native on swipeable rows; horizontal moves
+       are captured by the swipe-to-delete handlers. -->
+  <style>
+    [data-swipe] { touch-action: pan-y; }
+  </style>
+
   <!-- Theme bootstrap: apply the stored preference (light/dark/system,
        default system) before first paint to avoid a wrong-theme flash. -->
   <script>
@@ -89,6 +95,10 @@
 <body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-screen">
   <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
+  <div id="undo-toast" class="hidden fixed bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
+    <span id="undo-toast-msg"></span>
+    <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
+  </div>
 
   <script>
     const params = new URLSearchParams(window.location.search);
@@ -105,6 +115,9 @@
     let editingNote = null;   // entry id whose note input is open
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
+    let pendingDelete = null;    // { kind: 'session'|'entry'|'set', id, timer } — deferred swipe delete in its undo window
+    let suppressClicksUntil = 0; // swallows the click browsers synthesize right after a swipe's touchend
+    let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
 
     // ---------- theme ----------
     const THEME_KEY = 'gym-tracker-theme';
@@ -196,14 +209,18 @@
     }
 
     function homeHtml() {
-      const rows = sessions.length ? sessions.map((s) => `
-        <div class="flex items-stretch rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-          <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
-            <div class="font-medium">${fmtDate(s.started_at)}</div>
-            <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
-            ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
-          </button>
-          <button data-action="delete-session" data-id="${s.id}" class="px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
+      const visible = sessions.filter((s) => !isPendingDelete('session', s.id));
+      const rows = visible.length ? visible.map((s) => `
+        <div class="relative rounded-xl overflow-hidden">
+          <div class="absolute inset-0 rounded-xl bg-red-500 dark:bg-red-600 flex items-center justify-end pr-5 text-white text-xl opacity-0" aria-hidden="true">🗑</div>
+          <div data-swipe="session:${s.id}" class="relative flex items-stretch rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+            <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
+              <div class="font-medium">${fmtDate(s.started_at)}</div>
+              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
+              ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
+            </button>
+            <button data-action="delete-session" data-id="${s.id}" class="px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
+          </div>
         </div>`).join('')
         : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No workouts yet — start your first one!</div>';
       return `
@@ -249,26 +266,32 @@
       const lt = en.last_time
         ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${en.last_time.sets.map((s) => esc(fmtSet(s))).join(', ')}</span></div>`
         : '';
-      const setRows = en.sets.map((s, i) => {
+      const setRows = en.sets.filter((s) => !isPendingDelete('set', s.id)).map((s, i) => {
         if (openForm && openForm.setId === s.id) return setFormHtml();
-        return `<button data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
-          <span class="text-xs text-zinc-400 dark:text-zinc-600 w-4 shrink-0">${i + 1}</span>
-          <span class="font-mono">${esc(fmtSet(s))}</span>
-          ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
-        </button>`;
+        return `<div class="relative rounded-lg overflow-hidden">
+          <div class="absolute inset-0 rounded-lg bg-red-500 dark:bg-red-600 flex items-center justify-end pr-3 text-white text-sm opacity-0" aria-hidden="true">🗑</div>
+          <button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
+            <span class="text-xs text-zinc-400 dark:text-zinc-600 w-4 shrink-0">${i + 1}</span>
+            <span class="font-mono">${esc(fmtSet(s))}</span>
+            ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
+          </button>
+        </div>`;
       }).join('');
       const addArea = openForm && openForm.entryId === en.id && !openForm.setId
         ? setFormHtml()
         : `<button data-action="open-add-set" data-entry="${en.id}" class="mt-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
-      return `<div class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3 mb-3">
-        <div class="flex items-center justify-between gap-2">
-          <div class="font-semibold">${esc(en.name)}</div>
-          <button data-action="delete-entry" data-entry="${en.id}" class="text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
+      return `<div class="relative rounded-xl overflow-hidden mb-3">
+        <div class="absolute inset-0 rounded-xl bg-red-500 dark:bg-red-600 flex items-center justify-end pr-5 text-white text-xl opacity-0" aria-hidden="true">🗑</div>
+        <div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-semibold">${esc(en.name)}</div>
+            <button data-action="delete-entry" data-entry="${en.id}" class="text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
+          </div>
+          ${noteHtml}
+          ${lt}
+          <div class="mt-2">${setRows}</div>
+          ${addArea}
         </div>
-        ${noteHtml}
-        ${lt}
-        <div class="mt-2">${setRows}</div>
-        ${addArea}
       </div>`;
     }
 
@@ -286,8 +309,9 @@
     }
 
     function sessionHtml() {
-      const cards = session.entries.length
-        ? session.entries.map(entryHtml).join('')
+      const visibleEntries = session.entries.filter((en) => !isPendingDelete('entry', en.id));
+      const cards = visibleEntries.length
+        ? visibleEntries.map(entryHtml).join('')
         : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-10">No exercises yet — add one below.</div>';
       return `
         <header class="flex items-center gap-2 py-4">
@@ -390,6 +414,7 @@
       e.preventDefault();
       const d = readDraft(e.target);
       openForm.draft = d;
+      await flushPendingDelete();
       const body = { set_type: d.type, note: d.note };
       if (d.type === 'reps') {
         if (d.reps.trim() === '') { openForm.error = 'Enter reps'; return render(); }
@@ -465,6 +490,160 @@
     }
     setInterval(tick, 1000);
 
+    // ---------- swipe-to-delete (touch devices) ----------
+    // Deferred delete: the row is hidden immediately, but the DELETE request
+    // is only sent when the 5s undo window closes — Undo is a pure
+    // client-side restore, nothing to recreate server-side.
+    const DELETE_LABELS = { session: 'Workout deleted', entry: 'Exercise removed', set: 'Set deleted' };
+
+    function isPendingDelete(kind, id) {
+      return !!pendingDelete && pendingDelete.kind === kind && pendingDelete.id === id;
+    }
+    function deleteUrlFor(kind, id) {
+      if (kind === 'session') return '/api/sessions/' + id;
+      if (kind === 'entry') return '/api/session-exercises/' + id;
+      return '/api/sets/' + id;
+    }
+    function showUndoToast(msg) {
+      document.getElementById('undo-toast-msg').textContent = msg;
+      document.getElementById('undo-toast').classList.remove('hidden');
+    }
+    function hideUndoToast() {
+      document.getElementById('undo-toast').classList.add('hidden');
+    }
+    function startPendingDelete(kind, id) {
+      flushPendingDelete().catch((err) => toast(err.message)); // a new swipe commits the previous pending delete right away
+      pendingDelete = { kind, id, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000) };
+      render();
+      showUndoToast(DELETE_LABELS[kind]);
+    }
+    function undoPendingDelete() {
+      if (pendingDelete) { clearTimeout(pendingDelete.timer); pendingDelete = null; }
+      hideUndoToast();
+      render();
+    }
+    // Send the deferred DELETE. {noRefresh} callers are about to load fresh
+    // data themselves; on failure the current view always reloads so the
+    // hidden row reappears.
+    async function commitPendingDelete(opts) {
+      if (!pendingDelete) return;
+      const pd = pendingDelete;
+      pendingDelete = null;
+      clearTimeout(pd.timer);
+      hideUndoToast();
+      if (openForm && ((pd.kind === 'entry' && openForm.entryId === pd.id) || (pd.kind === 'set' && openForm.setId === pd.id))) openForm = null;
+      let failed = false;
+      try {
+        await api('DELETE', deleteUrlFor(pd.kind, pd.id));
+      } catch (err) {
+        failed = true;
+        toast(err.message);
+      }
+      if (failed || !opts || !opts.noRefresh) {
+        // carry in-progress set-form typing across the re-render
+        const form = document.getElementById('set-form');
+        if (form && openForm) openForm.draft = readDraft(form);
+        if (view === 'home' || !session) await loadHome(); else await refreshSession();
+      }
+    }
+    function flushPendingDelete() {
+      return commitPendingDelete({ noRefresh: true });
+    }
+    // Hiding/closing the page mid-window must not orphan the deletion.
+    function flushPendingDeleteKeepalive() {
+      if (!pendingDelete) return;
+      const pd = pendingDelete;
+      pendingDelete = null;
+      clearTimeout(pd.timer);
+      hideUndoToast();
+      needsRefreshOnShow = true;
+      try { fetch(deleteUrlFor(pd.kind, pd.id), { method: 'DELETE', headers: authHeaders, keepalive: true }); } catch (_) {}
+    }
+    window.addEventListener('pagehide', flushPendingDeleteKeepalive);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushPendingDeleteKeepalive();
+      else if (needsRefreshOnShow) {
+        needsRefreshOnShow = false;
+        (view === 'home' || !session ? loadHome() : refreshSession()).catch((err) => toast(err.message));
+      }
+    });
+
+    // Delegated touch handlers survive the app's full re-renders, mirroring
+    // the click delegation below. Only touch input fires these — desktop
+    // mouse users are unaffected.
+    let swipeGesture = null;
+    document.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      const t = e.target;
+      if (!t.closest || t.closest('#set-form') || t.closest('input, textarea')) return;
+      const el = t.closest('[data-swipe]'); // innermost swipeable wins (set row inside entry card)
+      if (!el) return;
+      swipeGesture = {
+        el,
+        key: el.dataset.swipe,
+        startX: e.touches[0].clientX,
+        startY: e.touches[0].clientY,
+        lastX: e.touches[0].clientX,
+        lastT: e.timeStamp,
+        vx: 0,
+        dx: 0,
+        width: el.offsetWidth,
+        armed: false,
+        dead: false,
+      };
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      const g = swipeGesture;
+      if (!g || g.dead) return;
+      const touch = e.touches[0];
+      const dx = touch.clientX - g.startX;
+      const dy = touch.clientY - g.startY;
+      if (!g.armed) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return; // within slop
+        if (Math.abs(dy) >= Math.abs(dx)) { g.dead = true; return; } // vertical scroll wins for the rest of this touch
+        g.armed = true;
+        g.el.style.transition = 'none';
+        g.el.style.willChange = 'transform';
+        // the red backdrop stays hidden at rest so it can't peek through
+        // the row's rounded corners; reveal it only while swiping
+        if (g.el.previousElementSibling) g.el.previousElementSibling.style.opacity = '1';
+      }
+      const dt = e.timeStamp - g.lastT;
+      if (dt > 0) g.vx = (touch.clientX - g.lastX) / dt;
+      g.lastX = touch.clientX;
+      g.lastT = e.timeStamp;
+      g.dx = Math.min(0, dx); // left-swipe only
+      g.el.style.transform = 'translateX(' + g.dx + 'px)';
+      if (e.cancelable) e.preventDefault();
+    }, { passive: false });
+
+    document.addEventListener('touchend', () => {
+      const g = swipeGesture;
+      swipeGesture = null;
+      if (!g || !g.armed || g.dead) return;
+      suppressClicksUntil = Date.now() + 350; // swallow the synthesized post-swipe click
+      g.el.style.transition = 'transform 150ms ease-out';
+      if (-g.dx >= g.width * 0.4 || g.vx < -0.5) {
+        g.el.style.transform = 'translateX(-' + g.width + 'px)';
+        const parts = g.key.split(':');
+        setTimeout(() => startPendingDelete(parts[0], +parts[1]), 150);
+      } else {
+        g.el.style.transform = 'translateX(0)';
+        setTimeout(() => { if (g.el.previousElementSibling) g.el.previousElementSibling.style.opacity = ''; }, 160);
+      }
+    });
+
+    document.addEventListener('touchcancel', () => {
+      const g = swipeGesture;
+      swipeGesture = null;
+      if (g && g.armed) {
+        g.el.style.transition = 'transform 150ms ease-out';
+        g.el.style.transform = 'translateX(0)';
+        setTimeout(() => { if (g.el.previousElementSibling) g.el.previousElementSibling.style.opacity = ''; }, 160);
+      }
+    });
+
     // ---------- actions ----------
     async function addExercise(exerciseId) {
       await api('POST', '/api/sessions/' + session.id + '/exercises', { exercise_id: exerciseId });
@@ -475,13 +654,21 @@
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-action]');
       if (!el) return;
+      // ignore the click a swipe just synthesized — one-shot, never the Undo button
+      if (Date.now() < suppressClicksUntil && !el.closest('#undo-toast')) { suppressClicksUntil = 0; return; }
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
       if (action === 'close-picker' && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
+    // Actions that navigate, mutate data, or open an edit surface commit any
+    // pending swipe delete first, so lists stay consistent and a later
+    // deferred refresh can't wipe in-progress typing.
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note']);
+
     async function handle(action, el) {
+      if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
       switch (action) {
         case 'start-workout': {
           const s = await api('POST', '/api/sessions');
@@ -568,6 +755,9 @@
           setThemePref(el.dataset.theme);
           applyTheme();
           render();
+          break;
+        case 'undo-delete':
+          undoPendingDelete();
           break;
       }
     }
