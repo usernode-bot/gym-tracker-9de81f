@@ -50,6 +50,20 @@ view. All workout data is strictly private per user.
   `reps` + `weight`; `'time'` populates `duration_seconds` + optional
   free-text `effort`. The other type's columns are NULL — keep that
   convention when editing.
+- **Sets also carry shape-independent tags**: `side` (`'left'`,
+  `'right'`, or NULL = both/untagged) and `is_drop` (boolean). A run
+  of consecutive `is_drop` rows after a normal row forms one drop
+  chain — purely a display/grouping marker derived from row order, no
+  parent FK. Both survive a reps↔time flip in `buildSetValues`.
+  Assisted reps / band assistance go in the freeform `note` fields
+  (sets, entries, and `workout_sessions.note`), not new columns.
+- **Bulk import**: `POST /api/import` takes `{ sessions: [{
+  started_at, note?, exercises: [{ name, note?, sets: [{ type,
+  reps/weight or duration_seconds/effort, side?, drop?, note? }] }]
+  }] }`, validates the whole payload up front, inserts in one
+  transaction, and skips sessions whose exact `started_at` already
+  exists for the user (safe re-import). Child rows take the session's
+  `started_at` as `created_at` so history sorts coherently.
 - **Exercises are per-user** (no shared catalog), deduped
   case-insensitively via a unique index on `(user_id, lower(name))`.
   `POST /api/exercises` is create-or-get, never a duplicate error.

@@ -17,7 +17,8 @@ const DEMO_USER_ID = 900001;
 // Everything else requires a valid platform-issued JWT.
 const PUBLIC_API_PATHS = new Set(['/health']);
 
-app.use(express.json());
+// 4mb (default is 100kb) so a bulk historical import fits in one request.
+app.use(express.json({ limit: '4mb' }));
 
 // Verify platform-issued JWT if one was passed, then enforce auth on
 // anything not explicitly marked public. The iframe adds `?token=…`
@@ -107,6 +108,14 @@ function buildSetValues(body, existing) {
     const effort = effortSrc === null || effortSrc === undefined ? null : String(effortSrc).trim().slice(0, 120);
     out.effort = effort || null;
   }
+  // side / is_drop / note apply to both shapes, so they survive a reps↔time
+  // flip: inherit straight from the existing row, not via type-scoped inherit().
+  const sideSrc = has('side') ? body.side : (existing ? existing.side : null);
+  if (sideSrc !== null && sideSrc !== undefined && sideSrc !== '' && sideSrc !== 'left' && sideSrc !== 'right') {
+    return { error: 'side must be "left", "right", or null' };
+  }
+  out.side = sideSrc === 'left' || sideSrc === 'right' ? sideSrc : null;
+  out.is_drop = has('is_drop') ? !!body.is_drop : !!(existing && existing.is_drop);
   out.note = has('note') ? cleanNote(body.note) : (existing ? existing.note : null);
   return { values: out };
 }
@@ -125,7 +134,7 @@ async function findEntry(entryId, userId) {
 async function findSet(setId, userId) {
   const { rows } = await pool.query(
     `SELECT st.id, st.session_exercise_id, st.set_type, st.reps, st.weight,
-            st.duration_seconds, st.effort, st.note, st.created_at
+            st.duration_seconds, st.effort, st.side, st.is_drop, st.note, st.created_at
      FROM sets st
      JOIN session_exercises se ON se.id = st.session_exercise_id
      JOIN workout_sessions s ON s.id = se.session_id
@@ -148,7 +157,7 @@ app.post('/api/sessions', wrap(async (req, res) => {
 app.get('/api/sessions', wrap(async (req, res) => {
   const uid = readUserId(req);
   const { rows } = await pool.query(
-    `SELECT s.id, s.started_at,
+    `SELECT s.id, s.started_at, s.note,
             COUNT(DISTINCT se.id)::int AS exercise_count,
             COUNT(st.id)::int AS set_count,
             (SELECT string_agg(e2.name, ', ' ORDER BY se2.created_at, se2.id)
@@ -171,7 +180,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   const sid = idParam(req.params.id);
   if (!sid) return res.status(404).json({ error: 'Session not found' });
   const s = (await pool.query(
-    'SELECT id, started_at FROM workout_sessions WHERE id = $1 AND user_id = $2',
+    'SELECT id, started_at, note FROM workout_sessions WHERE id = $1 AND user_id = $2',
     [sid, uid]
   )).rows[0];
   if (!s) return res.status(404).json({ error: 'Session not found' });
@@ -205,7 +214,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   const setsByEntry = {};
   if (entryIds.length) {
     const sets = (await pool.query(
-      `SELECT id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, note, created_at
+      `SELECT id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at
        FROM sets WHERE session_exercise_id = ANY($1::int[])
        ORDER BY created_at, id`,
       [entryIds]
@@ -218,6 +227,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   res.json({
     id: s.id,
     started_at: s.started_at,
+    note: s.note,
     entries: entries.map((e) => ({
       id: e.id,
       exercise_id: e.exercise_id,
@@ -231,6 +241,19 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   });
 }));
 
+app.patch('/api/sessions/:id', wrap(async (req, res) => {
+  const sid = idParam(req.params.id);
+  if (!sid) return res.status(404).json({ error: 'Session not found' });
+  const owned = (await pool.query(
+    'SELECT id FROM workout_sessions WHERE id = $1 AND user_id = $2',
+    [sid, req.user.id]
+  )).rows[0];
+  if (!owned) return res.status(404).json({ error: 'Session not found' });
+  const note = cleanNote(req.body && req.body.note);
+  await pool.query('UPDATE workout_sessions SET note = $2 WHERE id = $1', [sid, note]);
+  res.json({ id: sid, note });
+}));
+
 app.delete('/api/sessions/:id', wrap(async (req, res) => {
   const sid = idParam(req.params.id);
   if (!sid) return res.status(404).json({ error: 'Session not found' });
@@ -240,6 +263,113 @@ app.delete('/api/sessions/:id', wrap(async (req, res) => {
   );
   if (!rowCount) return res.status(404).json({ error: 'Session not found' });
   res.json({ ok: true });
+}));
+
+// ---------- Bulk import ----------
+
+// All-or-nothing import of historical workouts (JSON produced by the user's
+// external conversion script). Validates the whole payload first, then
+// inserts inside one transaction. Sessions whose exact started_at already
+// exists for this user are skipped, so re-importing the same file is safe.
+app.post('/api/import', wrap(async (req, res) => {
+  const bad = (msg) => res.status(400).json({ error: msg });
+  const sessionsIn = req.body && Array.isArray(req.body.sessions) ? req.body.sessions : null;
+  if (!sessionsIn) return bad('Body must be an object like { "sessions": [...] }');
+  if (sessionsIn.length > 2000) return bad('At most 2000 sessions per import');
+
+  const parsed = [];
+  for (let i = 0; i < sessionsIn.length; i++) {
+    const sPath = `sessions[${i}]`;
+    const s = sessionsIn[i];
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return bad(`${sPath}: must be an object`);
+    const started = new Date(String(s.started_at || ''));
+    if (!s.started_at || Number.isNaN(started.getTime())) {
+      return bad(`${sPath}.started_at: must be an ISO-8601 datetime, e.g. "2024-05-03T18:30:00Z"`);
+    }
+    const exercisesIn = s.exercises === undefined ? [] : s.exercises;
+    if (!Array.isArray(exercisesIn)) return bad(`${sPath}.exercises: must be an array`);
+    const exercises = [];
+    for (let j = 0; j < exercisesIn.length; j++) {
+      const ePath = `${sPath}.exercises[${j}]`;
+      const ex = exercisesIn[j];
+      if (!ex || typeof ex !== 'object' || Array.isArray(ex)) return bad(`${ePath}: must be an object`);
+      const name = String(ex.name || '').trim().replace(/\s+/g, ' ');
+      if (!name) return bad(`${ePath}.name: exercise name is required`);
+      if (name.length > 120) return bad(`${ePath}.name: must be 120 characters or fewer`);
+      const setsIn = ex.sets === undefined ? [] : ex.sets;
+      if (!Array.isArray(setsIn)) return bad(`${ePath}.sets: must be an array`);
+      const sets = [];
+      for (let k = 0; k < setsIn.length; k++) {
+        const st = setsIn[k];
+        if (!st || typeof st !== 'object' || Array.isArray(st)) return bad(`${ePath}.sets[${k}]: must be an object`);
+        const { error, values } = buildSetValues({
+          set_type: st.type !== undefined ? st.type : st.set_type,
+          reps: st.reps,
+          weight: st.weight,
+          duration_seconds: st.duration_seconds,
+          effort: st.effort,
+          side: st.side,
+          is_drop: st.drop !== undefined ? st.drop : st.is_drop,
+          note: st.note,
+        }, null);
+        if (error) return bad(`${ePath}.sets[${k}]: ${error}`);
+        sets.push(values);
+      }
+      exercises.push({ name, note: cleanNote(ex.note), sets });
+    }
+    parsed.push({ started, note: cleanNote(s.note), exercises });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let imported = 0, skipped = 0, exercisesCreated = 0, setCount = 0;
+    for (const s of parsed) {
+      // Sees rows inserted earlier in this transaction too, so duplicate
+      // started_at values within one payload are also skipped.
+      const dup = await client.query(
+        'SELECT 1 FROM workout_sessions WHERE user_id = $1 AND started_at = $2 LIMIT 1',
+        [req.user.id, s.started]
+      );
+      if (dup.rowCount) { skipped++; continue; }
+      const sid = (await client.query(
+        'INSERT INTO workout_sessions (user_id, started_at, note) VALUES ($1, $2, $3) RETURNING id',
+        [req.user.id, s.started, s.note]
+      )).rows[0].id;
+      imported++;
+      for (const ex of s.exercises) {
+        // xmax = 0 distinguishes a fresh insert from the no-op conflict update.
+        const up = (await client.query(
+          `INSERT INTO exercises (user_id, name) VALUES ($1, $2)
+           ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
+           RETURNING id, (xmax = 0) AS created`,
+          [req.user.id, ex.name]
+        )).rows[0];
+        if (up.created) exercisesCreated++;
+        // Children take the session's started_at as created_at so historical
+        // rows sort coherently; array order is kept by the serial-id tiebreak.
+        const entryId = (await client.query(
+          'INSERT INTO session_exercises (session_id, exercise_id, note, created_at) VALUES ($1, $2, $3, $4) RETURNING id',
+          [sid, up.id, ex.note, s.started]
+        )).rows[0].id;
+        for (const v of ex.sets) {
+          await client.query(
+            `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [entryId, v.set_type, v.reps, v.weight, v.duration_seconds, v.effort, v.side, v.is_drop, v.note, s.started]
+          );
+          setCount++;
+        }
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ imported, skipped, exercises_created: exercisesCreated, sets: setCount });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }));
 
 // ---------- Exercises ----------
@@ -329,10 +459,10 @@ app.post('/api/session-exercises/:id/sets', wrap(async (req, res) => {
   const { error, values } = buildSetValues(req.body || {}, null);
   if (error) return res.status(400).json({ error });
   const { rows } = await pool.query(
-    `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, note, created_at`,
-    [entryId, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.note]
+    `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at`,
+    [entryId, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.side, values.is_drop, values.note]
   );
   res.json(rows[0]);
 }));
@@ -345,10 +475,10 @@ app.patch('/api/sets/:id', wrap(async (req, res) => {
   const { error, values } = buildSetValues(req.body || {}, existing);
   if (error) return res.status(400).json({ error });
   const { rows } = await pool.query(
-    `UPDATE sets SET set_type = $2, reps = $3, weight = $4, duration_seconds = $5, effort = $6, note = $7
+    `UPDATE sets SET set_type = $2, reps = $3, weight = $4, duration_seconds = $5, effort = $6, side = $7, is_drop = $8, note = $9
      WHERE id = $1
-     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, note, created_at`,
-    [id, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.note]
+     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at`,
+    [id, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.side, values.is_drop, values.note]
   );
   res.json(rows[0]);
 }));
@@ -407,9 +537,11 @@ async function migrate() {
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL,
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      note TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE workout_sessions ADD COLUMN IF NOT EXISTS note TEXT`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS workout_sessions_user_started_idx
     ON workout_sessions (user_id, started_at DESC)
@@ -438,10 +570,14 @@ async function migrate() {
       weight NUMERIC(7,2),
       duration_seconds INTEGER,
       effort VARCHAR(120),
+      side TEXT CHECK (side IN ('left', 'right')),
+      is_drop BOOLEAN NOT NULL DEFAULT FALSE,
       note TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE sets ADD COLUMN IF NOT EXISTS side TEXT CHECK (side IN ('left', 'right'))`);
+  await pool.query(`ALTER TABLE sets ADD COLUMN IF NOT EXISTS is_drop BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS sets_entry_idx ON sets (session_exercise_id)
   `);
@@ -462,13 +598,14 @@ async function seedStagingDemo() {
     INSERT INTO exercises (id, user_id, name) VALUES
       (900001, 900001, 'Staging demo bench press'),
       (900002, 900001, 'Staging demo squat'),
-      (900003, 900001, 'Staging demo plank')
+      (900003, 900001, 'Staging demo plank'),
+      (900004, 900001, 'Staging demo split squat')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
-    INSERT INTO workout_sessions (id, user_id, started_at) VALUES
-      (900001, 900001, NOW() - INTERVAL '3 days'),
-      (900002, 900001, NOW() - INTERVAL '2 hours')
+    INSERT INTO workout_sessions (id, user_id, started_at, note) VALUES
+      (900001, 900001, NOW() - INTERVAL '3 days', NULL),
+      (900002, 900001, NOW() - INTERVAL '2 hours', 'Staging demo workout note — deload week')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -476,17 +613,21 @@ async function seedStagingDemo() {
       (900001, 900001, 900001, NULL, NOW() - INTERVAL '3 days'),
       (900002, 900001, 900002, NULL, NOW() - INTERVAL '3 days' + INTERVAL '10 minutes'),
       (900003, 900002, 900001, 'Staging demo note — felt strong', NOW() - INTERVAL '2 hours'),
-      (900004, 900002, 900003, NULL, NOW() - INTERVAL '2 hours' + INTERVAL '10 minutes')
+      (900004, 900002, 900003, NULL, NOW() - INTERVAL '2 hours' + INTERVAL '10 minutes'),
+      (900005, 900002, 900004, NULL, NOW() - INTERVAL '2 hours' + INTERVAL '20 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
-    INSERT INTO sets (id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, note, created_at) VALUES
-      (900001, 900001, 'reps', 8, 60,   NULL, NULL,      NULL,                    NOW() - INTERVAL '3 days'),
-      (900002, 900001, 'reps', 8, 60,   NULL, NULL,      NULL,                    NOW() - INTERVAL '3 days' + INTERVAL '3 minutes'),
-      (900003, 900002, 'reps', 5, 80,   NULL, NULL,      'Staging demo set note', NOW() - INTERVAL '3 days' + INTERVAL '12 minutes'),
-      (900004, 900003, 'reps', 8, 62.5, NULL, NULL,      NULL,                    NOW() - INTERVAL '2 hours'),
-      (900005, 900003, 'reps', 7, 62.5, NULL, NULL,      NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '3 minutes'),
-      (900006, 900004, 'time', NULL, NULL, 60, 'level 8', NULL,                   NOW() - INTERVAL '2 hours' + INTERVAL '12 minutes')
+    INSERT INTO sets (id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at) VALUES
+      (900001, 900001, 'reps', 8, 60,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '3 days'),
+      (900002, 900001, 'reps', 8, 60,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '3 days' + INTERVAL '3 minutes'),
+      (900003, 900002, 'reps', 5, 80,   NULL, NULL,      NULL,    FALSE, 'Staging demo set note', NOW() - INTERVAL '3 days' + INTERVAL '12 minutes'),
+      (900004, 900003, 'reps', 8, 62.5, NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '2 hours'),
+      (900005, 900003, 'reps', 7, 62.5, NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '3 minutes'),
+      (900007, 900003, 'reps', 6, 50,   NULL, NULL,      NULL,    TRUE,  NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '4 minutes'),
+      (900006, 900004, 'time', NULL, NULL, 60, 'level 8', NULL,   FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '12 minutes'),
+      (900008, 900005, 'reps', 10, 20,  NULL, NULL,      'left',  FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '20 minutes'),
+      (900009, 900005, 'reps', 10, 20,  NULL, NULL,      'right', FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '22 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
 }

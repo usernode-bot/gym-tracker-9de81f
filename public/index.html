@@ -119,6 +119,8 @@
     let picker = null;        // { query, list } when the add-exercise sheet is open
     let openForm = null;      // { entryId, setId|null, draft, error } for the set form
     let editingNote = null;   // entry id whose note input is open
+    let editingSessionNote = false; // the workout-level note input is open
+    let importSheet = null;   // { text, error, busy } while the import sheet is open
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set', id, timer } — deferred swipe delete in its undo window
@@ -180,12 +182,20 @@
       return NaN;
     }
     function fmtSet(s) {
-      if (s.set_type === 'reps') return s.reps + ' × ' + fmtW(s.weight);
-      return fmtDur(s.duration_seconds) + (s.effort ? ' · ' + s.effort : '');
+      const side = s.side === 'left' ? 'L ' : s.side === 'right' ? 'R ' : '';
+      if (s.set_type === 'reps') return side + s.reps + ' × ' + fmtW(s.weight);
+      return side + fmtDur(s.duration_seconds) + (s.effort ? ' · ' + s.effort : '');
     }
-    function toast(msg) {
+    // One-line summary of a set list where drop sets chain onto their parent:
+    // "10 × 60 ↘ 8 × 50, 8 × 55"
+    function fmtSetList(sets) {
+      return sets.map((s, i) => (i ? (s.is_drop ? ' ↘ ' : ', ') : '') + fmtSet(s)).join('');
+    }
+    function toast(msg, ok) {
       const t = document.getElementById('toast');
       t.textContent = msg;
+      t.classList.toggle('bg-emerald-600/95', !!ok);
+      t.classList.toggle('bg-red-500/90', !ok);
       t.classList.remove('hidden');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => t.classList.add('hidden'), 3500);
@@ -224,6 +234,7 @@
               <div class="font-medium">${fmtDate(s.started_at)}</div>
               <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
+              ${s.note ? `<div class="text-xs italic text-amber-700 dark:text-amber-200/80 truncate mt-0.5">${esc(s.note)}</div>` : ''}
             </button>
             <button data-action="delete-session" data-id="${s.id}" class="x-delete px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
           </div>
@@ -232,10 +243,14 @@
       return `
         <header class="flex items-center justify-between gap-2 py-5">
           <h1 class="text-2xl font-bold">🏋️ Gym Tracker</h1>
-          ${themeSwitcherHtml()}
+          <div class="flex items-center gap-2">
+            ${demo ? '' : `<button data-action="open-import" class="px-2.5 py-1 text-sm rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100" title="Import workouts from JSON">Import</button>`}
+            ${themeSwitcherHtml()}
+          </div>
         </header>
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
-        <div class="space-y-2">${rows}</div>`;
+        <div class="space-y-2">${rows}</div>
+        ${importSheet ? importSheetHtml() : ''}`;
     }
 
     function setFormHtml() {
@@ -250,9 +265,20 @@
              <input name="duration" value="${esc(d.duration)}" placeholder="mm:ss or sec" autocomplete="off" class="${inp} w-1/2 min-w-0">
              <input name="effort" value="${esc(d.effort)}" placeholder="effort (level 8…)" maxlength="120" autocomplete="off" class="${inp} w-1/2 min-w-0">
            </div>`;
+      // Side applies to both shapes; the drop toggle only makes sense once the
+      // entry has a set to drop from (or when unflagging an existing drop set).
+      const en = findEntryLocal(openForm.entryId);
+      const others = en ? en.sets.filter((s) => !isPendingDelete('set', s.id)) : [];
+      const pos = openForm.setId ? others.findIndex((s) => s.id === openForm.setId) : others.length;
+      const showDrop = pos > 0 || d.drop;
+      const sideBtn = (v, label) => `<button type="button" data-action="form-side" data-side="${v}" class="flex-1 py-1 rounded-lg text-xs transition-colors ${(d.side || '') === v ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
       return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-100 dark:bg-zinc-800/70 border border-zinc-200 dark:border-zinc-700 p-2.5">
         <div class="flex gap-1.5">${seg('reps', 'Reps × Weight')}${seg('time', 'Time × Effort')}</div>
         ${fields}
+        <div class="flex items-center gap-2 mt-2">
+          <div class="flex gap-1 flex-1">${sideBtn('', 'Both')}${sideBtn('left', 'L')}${sideBtn('right', 'R')}</div>
+          ${showDrop ? `<label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap"><input type="checkbox" name="drop" ${d.drop ? 'checked' : ''} class="accent-violet-600"> ↘ Drop set</label>` : ''}
+        </div>
         <input name="note" value="${esc(d.note)}" placeholder="note (optional)" maxlength="500" autocomplete="off" class="${inp} w-full mt-2">
         ${openForm.error ? `<div class="text-red-600 dark:text-red-400 text-xs mt-1.5">${esc(openForm.error)}</div>` : ''}
         <div class="flex items-center gap-2 mt-2">
@@ -270,14 +296,18 @@
           ? `<button data-action="add-note" data-entry="${en.id}" class="block w-full text-left mt-1 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(en.note)}</button>`
           : `<button data-action="add-note" data-entry="${en.id}" class="mt-0.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       const lt = en.last_time
-        ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${en.last_time.sets.map((s) => esc(fmtSet(s))).join(', ')}</span></div>`
+        ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${esc(fmtSetList(en.last_time.sets))}</span></div>`
         : '';
-      const setRows = en.sets.filter((s) => !isPendingDelete('set', s.id)).map((s, i) => {
+      // Drop sets chain onto the previous set: they don't advance the set
+      // number and show a ↘ marker in the number slot instead.
+      let setNum = 0;
+      const setRows = en.sets.filter((s) => !isPendingDelete('set', s.id)).map((s) => {
+        if (!s.is_drop) setNum++;
         if (openForm && openForm.setId === s.id) return setFormHtml();
         return `<div class="relative rounded-lg overflow-hidden">
           <div class="absolute inset-0 rounded-lg bg-red-500 dark:bg-red-600 flex items-center justify-end pr-3 text-white text-sm opacity-0" aria-hidden="true">🗑</div>
           <button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
-            <span class="text-xs text-zinc-400 dark:text-zinc-600 w-4 shrink-0">${i + 1}</span>
+            <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
             <span class="font-mono">${esc(fmtSet(s))}</span>
             ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
           </button>
@@ -301,6 +331,22 @@
       </div>`;
     }
 
+    function importSheetHtml() {
+      return `<div data-action="close-import" class="fixed inset-0 bg-black/60 z-20">
+        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:85vh">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Import workouts</div>
+            <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+          </div>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">Paste the JSON from your conversion script, or choose a .json file. Workouts whose start time already exists are skipped, so re-importing is safe.</p>
+          <input type="file" id="import-file" accept=".json,application/json" class="text-xs text-zinc-500 dark:text-zinc-400">
+          <textarea id="import-text" rows="8" spellcheck="false" placeholder='{ "sessions": [ { "started_at": "2024-05-03T18:30:00Z", "exercises": [ … ] } ] }' class="${inp} w-full font-mono text-xs" style="min-height:8rem"></textarea>
+          ${importSheet.error ? `<div class="text-red-600 dark:text-red-400 text-xs">${esc(importSheet.error)}</div>` : ''}
+          <button data-action="run-import" ${importSheet.busy ? 'disabled' : ''} class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-sm font-medium">${importSheet.busy ? 'Importing…' : 'Import'}</button>
+        </div>
+      </div>`;
+    }
+
     function pickerHtml() {
       return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
         <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
@@ -319,6 +365,11 @@
       const cards = visibleEntries.length
         ? visibleEntries.map(entryHtml).join('')
         : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-10">No exercises yet — add one below.</div>';
+      const sNote = editingSessionNote
+        ? `<input id="session-note-input" value="${esc(session.note || '')}" placeholder="Add a workout note…" maxlength="500" autocomplete="off" class="${inp} w-full mb-3">`
+        : session.note
+          ? `<button data-action="session-note" class="block w-full text-left mb-3 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
+          : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       return `
         <header class="flex items-center gap-2 py-4">
           <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
@@ -327,6 +378,7 @@
             <div class="text-xs text-zinc-500">Workout session</div>
           </div>
         </header>
+        ${sNote}
         <div>${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
         ${picker ? pickerHtml() : ''}
@@ -383,6 +435,42 @@
           await refreshSession();
         });
       }
+      const sni = document.getElementById('session-note-input');
+      if (sni) {
+        sni.focus();
+        sni.setSelectionRange(sni.value.length, sni.value.length);
+        sni.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); sni.blur(); }
+          else if (e.key === 'Escape') { sni.dataset.cancel = '1'; sni.blur(); }
+        });
+        sni.addEventListener('blur', async () => {
+          const cancelled = sni.dataset.cancel === '1';
+          const val = sni.value;
+          editingSessionNote = false;
+          if (cancelled) { render(); return; }
+          try { await api('PATCH', '/api/sessions/' + session.id, { note: val }); }
+          catch (err) { toast(err.message); }
+          await refreshSession();
+        });
+      }
+      if (importSheet) {
+        const ta = document.getElementById('import-text');
+        ta.value = importSheet.text;
+        ta.addEventListener('input', () => { importSheet.text = ta.value; });
+        const fi = document.getElementById('import-file');
+        fi.addEventListener('change', () => {
+          const f = fi.files && fi.files[0];
+          if (!f) return;
+          const r = new FileReader();
+          r.onload = () => {
+            if (!importSheet) return;
+            importSheet.text = String(r.result || '');
+            const cur = document.getElementById('import-text');
+            if (cur) cur.value = importSheet.text;
+          };
+          r.readAsText(f);
+        });
+      }
       if (picker) {
         const si = document.getElementById('picker-search');
         si.value = picker.query;
@@ -403,6 +491,8 @@
         weight: st.weight != null ? fmtW(st.weight) : '',
         duration: st.duration_seconds != null ? fmtDur(st.duration_seconds) : '',
         effort: st.effort || '',
+        side: st.side || '',
+        drop: !!st.is_drop,
         note: st.note || '',
       };
     }
@@ -410,12 +500,15 @@
       const en = findEntryLocal(entryId);
       const src = (en.sets.length && en.sets[en.sets.length - 1]) ||
         (en.last_time && en.last_time.sets.length && en.last_time.sets[en.last_time.sets.length - 1]);
-      if (src) { const d = draftFromSet(src); d.note = ''; return d; }
-      return { type: 'reps', reps: '', weight: '', duration: '', effort: '', note: '' };
+      // Side carries over (log left, flip one toggle to log right); note and
+      // the drop flag always start fresh.
+      if (src) { const d = draftFromSet(src); d.note = ''; d.drop = false; return d; }
+      return { type: 'reps', reps: '', weight: '', duration: '', effort: '', side: '', drop: false, note: '' };
     }
     function readDraft(form) {
       const g = (n) => { const i = form.querySelector('[name="' + n + '"]'); return i ? i.value : ''; };
-      return { type: openForm.draft.type, reps: g('reps'), weight: g('weight'), duration: g('duration'), effort: g('effort'), note: g('note') };
+      const dropEl = form.querySelector('[name="drop"]');
+      return { type: openForm.draft.type, side: openForm.draft.side || '', reps: g('reps'), weight: g('weight'), duration: g('duration'), effort: g('effort'), drop: dropEl ? dropEl.checked : !!openForm.draft.drop, note: g('note') };
     }
 
     async function onSetSubmit(e) {
@@ -423,7 +516,7 @@
       const d = readDraft(e.target);
       openForm.draft = d;
       await flushPendingDelete();
-      const body = { set_type: d.type, note: d.note };
+      const body = { set_type: d.type, side: d.side || null, is_drop: !!d.drop, note: d.note };
       if (d.type === 'reps') {
         if (d.reps.trim() === '') { openForm.error = 'Enter reps'; return render(); }
         if (d.weight.trim() === '') { openForm.error = 'Enter weight (0 for bodyweight)'; return render(); }
@@ -442,7 +535,7 @@
         } else {
           await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
           stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
-          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, note: '' }, error: '' };
+          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, note: '', drop: false }, error: '' };
         }
         await refreshSession();
       } catch (err) {
@@ -472,6 +565,8 @@
       view = 'session';
       openForm = null;
       editingNote = null;
+      editingSessionNote = false;
+      importSheet = null;
       picker = null;
       seedStopwatch();
       render();
@@ -666,14 +761,14 @@
       if (Date.now() < suppressClicksUntil && !el.closest('#undo-toast')) { suppressClicksUntil = 0; return; }
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
-      if (action === 'close-picker' && e.target !== el) return;
+      if ((action === 'close-picker' || action === 'close-import') && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'open-import', 'run-import']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -693,7 +788,7 @@
           }
           break;
         case 'back-home':
-          openForm = null; editingNote = null; picker = null;
+          openForm = null; editingNote = null; editingSessionNote = false; picker = null;
           await loadHome();
           break;
         case 'open-picker': {
@@ -753,6 +848,48 @@
           openForm.draft.type = el.dataset.type;
           openForm.error = '';
           render();
+          break;
+        }
+        case 'form-side': {
+          const form = document.getElementById('set-form');
+          if (form) openForm.draft = readDraft(form);
+          openForm.draft.side = el.dataset.side;
+          render();
+          break;
+        }
+        case 'session-note':
+          editingSessionNote = true;
+          render();
+          break;
+        case 'open-import':
+          importSheet = { text: '', error: '', busy: false };
+          render();
+          break;
+        case 'close-import':
+          importSheet = null;
+          render();
+          break;
+        case 'run-import': {
+          const ta = document.getElementById('import-text');
+          const text = (ta ? ta.value : importSheet.text).trim();
+          if (ta) importSheet.text = ta.value;
+          if (!text) { importSheet.error = 'Paste JSON or choose a file first.'; render(); break; }
+          let payload;
+          try { payload = JSON.parse(text); }
+          catch (_) { importSheet.error = 'That isn’t valid JSON — check the file or paste.'; render(); break; }
+          importSheet.busy = true; importSheet.error = ''; render();
+          try {
+            const r = await api('POST', '/api/import', payload);
+            importSheet = null;
+            await loadHome();
+            const parts = ['Imported ' + r.imported + ' workout' + (r.imported === 1 ? '' : 's')];
+            if (r.skipped) parts.push(r.skipped + ' skipped as already present');
+            toast(parts.join(' — '), true);
+          } catch (err) {
+            importSheet.busy = false;
+            importSheet.error = err.message;
+            render();
+          }
           break;
         }
         case 'reset-stopwatch':
