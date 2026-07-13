@@ -59,3 +59,12 @@ view. All workout data is strictly private per user.
   recreate it, but don't `DROP` it either (prod data is left alone).
 - The rest stopwatch is deliberately client-side only (no schema, no
   API) and counts **up**; a countdown timer is future work.
+- **JSON import/export** (`GET /api/export`, `POST /api/import`):
+  format `gym-tracker-export` version 1 — portable, no DB ids,
+  exercises referenced by name. Import is additive and all-or-nothing
+  (whole file validated before any write, single transaction);
+  duplicate sessions are skipped by exact `started_at` match so
+  re-importing an export is idempotent. Imported entry/set
+  `created_at` default to the session's `started_at` (not `NOW()`) so
+  bulk-importing history doesn't pollute the exercise picker's
+  most-recently-used ordering.

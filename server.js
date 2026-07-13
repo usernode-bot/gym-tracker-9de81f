@@ -17,7 +17,8 @@ const DEMO_USER_ID = 900001;
 // Everything else requires a valid platform-issued JWT.
 const PUBLIC_API_PATHS = new Set(['/health']);
 
-app.use(express.json());
+// 5mb: import files can carry a whole workout history (see /api/import limits).
+app.use(express.json({ limit: '5mb' }));
 
 // Verify platform-issued JWT if one was passed, then enforce auth on
 // anything not explicitly marked public. The iframe adds `?token=…`
@@ -360,6 +361,206 @@ app.delete('/api/sets/:id', wrap(async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Set not found' });
   await pool.query('DELETE FROM sets WHERE id = $1', [id]);
   res.json({ ok: true });
+}));
+
+// ---------- Import / export ----------
+
+const EXPORT_FORMAT = 'gym-tracker-export';
+const MAX_IMPORT_SESSIONS = 1000;
+const MAX_IMPORT_SETS = 20000;
+
+function exportSet(st) {
+  const out = st.set_type === 'reps'
+    ? { type: 'reps', reps: st.reps, weight: st.weight === null ? null : parseFloat(st.weight) }
+    : { type: 'time', duration_seconds: st.duration_seconds, effort: st.effort };
+  out.note = st.note;
+  out.created_at = st.created_at;
+  return out;
+}
+
+app.get('/api/export', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const sessions = (await pool.query(
+    'SELECT id, started_at FROM workout_sessions WHERE user_id = $1 ORDER BY started_at DESC, id DESC',
+    [uid]
+  )).rows;
+  const entries = (await pool.query(
+    `SELECT se.id, se.session_id, se.note, e.name
+     FROM session_exercises se
+     JOIN exercises e ON e.id = se.exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $1
+     ORDER BY se.created_at, se.id`,
+    [uid]
+  )).rows;
+  const sets = (await pool.query(
+    `SELECT st.session_exercise_id, st.set_type, st.reps, st.weight,
+            st.duration_seconds, st.effort, st.note, st.created_at
+     FROM sets st
+     JOIN session_exercises se ON se.id = st.session_exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $1
+     ORDER BY st.created_at, st.id`,
+    [uid]
+  )).rows;
+
+  const setsByEntry = {};
+  for (const st of sets) {
+    (setsByEntry[st.session_exercise_id] = setsByEntry[st.session_exercise_id] || []).push(st);
+  }
+  const entriesBySession = {};
+  for (const en of entries) {
+    (entriesBySession[en.session_id] = entriesBySession[en.session_id] || []).push(en);
+  }
+
+  const day = new Date().toISOString().slice(0, 10);
+  res.set('Content-Disposition', `attachment; filename="gym-tracker-export-${day}.json"`);
+  res.json({
+    format: EXPORT_FORMAT,
+    version: 1,
+    exported_at: new Date().toISOString(),
+    sessions: sessions.map((s) => ({
+      started_at: s.started_at,
+      exercises: (entriesBySession[s.id] || []).map((en) => ({
+        name: en.name,
+        note: en.note,
+        sets: (setsByEntry[en.id] || []).map(exportSet),
+      })),
+    })),
+  });
+}));
+
+// Accepts a string parseable as a date; returns a Date or null.
+function parseImportDate(v) {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+// Validate the whole payload up front (all-or-nothing — nothing is written
+// if any part is invalid), returning either { error } with a JSON-path-style
+// pointer or the parsed sessions ready to insert.
+function parseImportPayload(body) {
+  const sessions = Array.isArray(body)
+    ? body
+    : (body && typeof body === 'object' && Array.isArray(body.sessions) ? body.sessions : null);
+  if (!sessions) return { error: 'Expected a gym-tracker export with a sessions array' };
+  if (sessions.length > MAX_IMPORT_SESSIONS) {
+    return { error: `Too many sessions: ${sessions.length} (max ${MAX_IMPORT_SESSIONS} per import)` };
+  }
+
+  const parsed = [];
+  let totalSets = 0;
+  for (let i = 0; i < sessions.length; i++) {
+    const at = `sessions[${i}]`;
+    const s = sessions[i];
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return { error: `${at}: expected an object` };
+    const started_at = parseImportDate(s.started_at);
+    if (!started_at) return { error: `${at}.started_at: must be a valid date string` };
+    const exercises = s.exercises === undefined || s.exercises === null ? [] : s.exercises;
+    if (!Array.isArray(exercises)) return { error: `${at}.exercises: must be an array` };
+
+    const outExercises = [];
+    for (let j = 0; j < exercises.length; j++) {
+      const exAt = `${at}.exercises[${j}]`;
+      const ex = exercises[j];
+      if (!ex || typeof ex !== 'object' || Array.isArray(ex)) return { error: `${exAt}: expected an object` };
+      const name = String(ex.name || '').trim().replace(/\s+/g, ' ');
+      if (!name) return { error: `${exAt}.name: exercise name is required` };
+      if (name.length > 120) return { error: `${exAt}.name: exercise name must be 120 characters or fewer` };
+      const rawSets = ex.sets === undefined || ex.sets === null ? [] : ex.sets;
+      if (!Array.isArray(rawSets)) return { error: `${exAt}.sets: must be an array` };
+
+      const outSets = [];
+      for (let k = 0; k < rawSets.length; k++) {
+        const setAt = `${exAt}.sets[${k}]`;
+        const st = rawSets[k];
+        if (!st || typeof st !== 'object' || Array.isArray(st)) return { error: `${setAt}: expected an object` };
+        // The export format says `type`; also accept `set_type` verbatim.
+        const { error, values } = buildSetValues({ ...st, set_type: st.set_type !== undefined ? st.set_type : st.type }, null);
+        if (error) return { error: `${setAt}: ${error}` };
+        if (st.created_at !== undefined && st.created_at !== null) {
+          const d = parseImportDate(st.created_at);
+          if (!d) return { error: `${setAt}.created_at: must be a valid date string` };
+          values.created_at = d;
+        }
+        outSets.push(values);
+        totalSets++;
+      }
+      outExercises.push({ name, note: cleanNote(ex.note), sets: outSets });
+    }
+    parsed.push({ started_at, exercises: outExercises });
+  }
+  if (totalSets > MAX_IMPORT_SETS) {
+    return { error: `Too many sets: ${totalSets} (max ${MAX_IMPORT_SETS} per import)` };
+  }
+  return { parsed };
+}
+
+app.post('/api/import', wrap(async (req, res) => {
+  const { error, parsed } = parseImportPayload(req.body);
+  if (error) return res.status(400).json({ error });
+
+  // Duplicate-skip by exact started_at: re-importing your own export is
+  // idempotent. The set also dedupes repeats within the file itself.
+  const existing = (await pool.query(
+    'SELECT started_at FROM workout_sessions WHERE user_id = $1',
+    [req.user.id]
+  )).rows;
+  const seen = new Set(existing.map((r) => r.started_at.getTime()));
+
+  let imported = 0;
+  let skipped = 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const exerciseIds = new Map(); // lowercased name -> id, per import
+    for (const s of parsed) {
+      const key = s.started_at.getTime();
+      if (seen.has(key)) { skipped++; continue; }
+      seen.add(key);
+      const sid = (await client.query(
+        'INSERT INTO workout_sessions (user_id, started_at, created_at) VALUES ($1, $2, $2) RETURNING id',
+        [req.user.id, s.started_at]
+      )).rows[0].id;
+      for (const en of s.exercises) {
+        const nameKey = en.name.toLowerCase();
+        let exId = exerciseIds.get(nameKey);
+        if (!exId) {
+          exId = (await client.query(
+            `INSERT INTO exercises (user_id, name) VALUES ($1, $2)
+             ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
+             RETURNING id`,
+            [req.user.id, en.name]
+          )).rows[0].id;
+          exerciseIds.set(nameKey, exId);
+        }
+        // Entry/set created_at defaults to the session's started_at (not
+        // NOW()) so bulk-importing old history doesn't flood the exercise
+        // picker's most-recently-used ordering; sequential ids preserve
+        // array order within equal timestamps.
+        const entryId = (await client.query(
+          'INSERT INTO session_exercises (session_id, exercise_id, note, created_at) VALUES ($1, $2, $3, $4) RETURNING id',
+          [sid, exId, en.note, s.started_at]
+        )).rows[0].id;
+        for (const v of en.sets) {
+          await client.query(
+            `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, note, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [entryId, v.set_type, v.reps, v.weight, v.duration_seconds, v.effort, v.note, v.created_at || s.started_at]
+          );
+        }
+      }
+      imported++;
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json({ imported, skipped });
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
