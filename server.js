@@ -41,6 +41,15 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+// Browsers auto-request /favicon.ico with no platform token. Serve it as a
+// public, non-401 route (an SVG with the app's weightlifter glyph) so the
+// request resolves cleanly and doesn't fall through to the auth-gated
+// catch-all — a stray 401 there trips the baseline "no console errors" check.
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#7c3aed"/><text x="32" y="34" font-size="34" text-anchor="middle" dominant-baseline="central">🏋️</text></svg>`;
+app.get('/favicon.ico', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=86400').type('image/svg+xml').send(FAVICON_SVG);
+});
+
 const wrap = (fn) => (req, res) => fn(req, res).catch((err) => res.status(500).json({ error: err.message }));
 
 // GET routes may read the staging demo user's rows via ?demo=1 (staging
