@@ -57,13 +57,6 @@ view. All workout data is strictly private per user.
   parent FK. Both survive a reps↔time flip in `buildSetValues`.
   Assisted reps / band assistance go in the freeform `note` fields
   (sets, entries, and `workout_sessions.note`), not new columns.
-- **Bulk import**: `POST /api/import` takes `{ sessions: [{
-  started_at, note?, exercises: [{ name, note?, sets: [{ type,
-  reps/weight or duration_seconds/effort, side?, drop?, note? }] }]
-  }] }`, validates the whole payload up front, inserts in one
-  transaction, and skips sessions whose exact `started_at` already
-  exists for the user (safe re-import). Child rows take the session's
-  `started_at` as `created_at` so history sorts coherently.
 - **Exercises are per-user** (no shared catalog), deduped
   case-insensitively via a unique index on `(user_id, lower(name))`.
   `POST /api/exercises` is create-or-get, never a duplicate error.
@@ -73,3 +66,18 @@ view. All workout data is strictly private per user.
   recreate it, but don't `DROP` it either (prod data is left alone).
 - The rest stopwatch is deliberately client-side only (no schema, no
   API) and counts **up**; a countdown timer is future work.
+- **JSON import/export** (`GET /api/export`, `POST /api/import`):
+  format `gym-tracker-export` version 1 — portable, no DB ids,
+  exercises referenced by name. Session objects carry `started_at`,
+  `note?`, and `exercises: [{ name, note?, sets }]`; set objects carry
+  `type` (`reps`/`weight` or `duration_seconds`/`effort`) plus the
+  optional shape-independent `side`, `drop`, and `note` (aliases
+  `set_type`/`is_drop` also accepted). Import is additive and
+  all-or-nothing (whole file validated before any write, single
+  transaction); duplicate sessions are skipped by exact `started_at`
+  match so re-importing an export is idempotent — that also makes it
+  the target for externally converted history (paste or upload via the
+  home footer's "Import JSON" sheet). Imported entry/set `created_at`
+  default to the session's `started_at` (not `NOW()`) so
+  bulk-importing history doesn't pollute the exercise picker's
+  most-recently-used ordering.

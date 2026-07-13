@@ -194,8 +194,8 @@
     function toast(msg, ok) {
       const t = document.getElementById('toast');
       t.textContent = msg;
-      t.classList.toggle('bg-emerald-600/95', !!ok);
       t.classList.toggle('bg-red-500/90', !ok);
+      t.classList.toggle('bg-emerald-600/90', !!ok);
       t.classList.remove('hidden');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => t.classList.add('hidden'), 3500);
@@ -243,13 +243,14 @@
       return `
         <header class="flex items-center justify-between gap-2 py-5">
           <h1 class="text-2xl font-bold">🏋️ Gym Tracker</h1>
-          <div class="flex items-center gap-2">
-            ${demo ? '' : `<button data-action="open-import" class="px-2.5 py-1 text-sm rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100" title="Import workouts from JSON">Import</button>`}
-            ${themeSwitcherHtml()}
-          </div>
+          ${themeSwitcherHtml()}
         </header>
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
         <div class="space-y-2">${rows}</div>
+        <div class="flex justify-center gap-6 mt-6">
+          <button data-action="export-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
+          <button data-action="import-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
+        </div>
         ${importSheet ? importSheetHtml() : ''}`;
     }
 
@@ -338,7 +339,7 @@
             <div class="font-semibold">Import workouts</div>
             <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400">Paste the JSON from your conversion script, or choose a .json file. Workouts whose start time already exists are skipped, so re-importing is safe.</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">Paste JSON (a Gym Tracker export, or your conversion script's output in the same format), or choose a .json file. Workouts whose start time already exists are skipped, so re-importing is safe.</p>
           <input type="file" id="import-file" accept=".json,application/json" class="text-xs text-zinc-500 dark:text-zinc-400">
           <textarea id="import-text" rows="8" spellcheck="false" placeholder='{ "sessions": [ { "started_at": "2024-05-03T18:30:00Z", "exercises": [ … ] } ] }' class="${inp} w-full font-mono text-xs" style="min-height:8rem"></textarea>
           ${importSheet.error ? `<div class="text-red-600 dark:text-red-400 text-xs">${esc(importSheet.error)}</div>` : ''}
@@ -478,6 +479,25 @@
         si.focus();
         renderPickerList();
       }
+    }
+
+    // ---------- import / export ----------
+    async function exportJson() {
+      // Can't use api(): the response is a file, not JSON to consume.
+      const res = await fetch('/api/export' + (demo ? '?demo=1' : ''), { headers: authHeaders });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Export failed (' + res.status + ')');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'gym-tracker-export-' + new Date().toISOString().slice(0, 10) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     // ---------- set form ----------
@@ -768,7 +788,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'open-import', 'run-import']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -861,7 +881,7 @@
           editingSessionNote = true;
           render();
           break;
-        case 'open-import':
+        case 'import-json':
           importSheet = { text: '', error: '', busy: false };
           render();
           break;
@@ -903,6 +923,9 @@
           break;
         case 'undo-delete':
           undoPendingDelete();
+          break;
+        case 'export-json':
+          await exportJson();
           break;
       }
     }
