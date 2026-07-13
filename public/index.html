@@ -353,8 +353,10 @@
       const form = document.getElementById('set-form');
       if (form) {
         form.addEventListener('submit', onSetSubmit);
+        // Auto-focus only a blank form — focusing a pre-filled one pops the
+        // mobile keyboard over values the user may just want to log as-is.
         const first = form.querySelector('input');
-        if (first) first.focus();
+        if (first && !first.value) first.focus();
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
