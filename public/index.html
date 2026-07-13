@@ -74,6 +74,12 @@
        are captured by the swipe-to-delete handlers. -->
   <style>
     [data-swipe] { touch-action: pan-y; }
+    /* Touch devices delete via swipe-left; hide the X buttons there.
+       Gated on the primary pointer (not viewport width) so a narrow
+       desktop window — where swipe doesn't exist — keeps its Xs. */
+    @media (hover: none) and (pointer: coarse) {
+      .x-delete { display: none; }
+    }
   </style>
 
   <!-- Theme bootstrap: apply the stored preference (light/dark/system,
@@ -219,7 +225,7 @@
               <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
             </button>
-            <button data-action="delete-session" data-id="${s.id}" class="px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
+            <button data-action="delete-session" data-id="${s.id}" class="x-delete px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
           </div>
         </div>`).join('')
         : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No workouts yet — start your first one!</div>';
@@ -285,7 +291,7 @@
         <div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
           <div class="flex items-center justify-between gap-2">
             <div class="font-semibold">${esc(en.name)}</div>
-            <button data-action="delete-entry" data-entry="${en.id}" class="text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
+            <button data-action="delete-entry" data-entry="${en.id}" class="x-delete text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
           </div>
           ${noteHtml}
           ${lt}
