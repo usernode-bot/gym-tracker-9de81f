@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -69,8 +69,24 @@
   <title>Gym Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
+
+  <!-- Theme bootstrap: apply the stored preference (light/dark/system,
+       default system) before first paint to avoid a wrong-theme flash. -->
+  <script>
+  (function () {
+    var pref = 'system';
+    try {
+      var stored = localStorage.getItem('gym-tracker-theme');
+      if (stored === 'light' || stored === 'dark' || stored === 'system') pref = stored;
+    } catch (_) {}
+    var dark = pref === 'dark' ||
+      (pref === 'system' && window.matchMedia &&
+       window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+  </script>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-screen">
   <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
 
@@ -89,6 +105,34 @@
     let editingNote = null;   // entry id whose note input is open
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
+
+    // ---------- theme ----------
+    const THEME_KEY = 'gym-tracker-theme';
+    const themeMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    function getThemePref() {
+      try {
+        const v = localStorage.getItem(THEME_KEY);
+        if (v === 'light' || v === 'dark' || v === 'system') return v;
+      } catch (_) {}
+      return 'system';
+    }
+    function setThemePref(v) {
+      try {
+        if (v === 'system') localStorage.removeItem(THEME_KEY);
+        else localStorage.setItem(THEME_KEY, v);
+      } catch (_) {}
+    }
+    function applyTheme() {
+      const pref = getThemePref();
+      const dark = pref === 'dark' || (pref === 'system' && themeMq && themeMq.matches);
+      document.documentElement.classList.toggle('dark', dark);
+    }
+    // Follow the OS live, but only while the user hasn't set an explicit choice.
+    if (themeMq) {
+      const onSystemChange = () => { if (getThemePref() === 'system') applyTheme(); };
+      if (themeMq.addEventListener) themeMq.addEventListener('change', onSystemChange);
+      else if (themeMq.addListener) themeMq.addListener(onSystemChange);
+    }
 
     // ---------- helpers ----------
     function esc(s) {
@@ -141,28 +185,39 @@
     }
 
     // ---------- rendering ----------
-    const inp = 'bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-violet-500';
+    const inp = 'bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-violet-500';
+
+    function themeSwitcherHtml() {
+      const pref = getThemePref();
+      const opt = (t, label, icon) => `<button type="button" data-action="set-theme" data-theme="${t}" title="${label}" aria-label="${label}" aria-pressed="${pref === t}" class="px-2 py-1 text-sm leading-none transition-colors ${pref === t ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${icon}</button>`;
+      return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">
+        ${opt('light', 'Light', '☀')}${opt('dark', 'Dark', '☾')}${opt('system', 'System', '◐')}
+      </div>`;
+    }
 
     function homeHtml() {
       const rows = sessions.length ? sessions.map((s) => `
-        <div class="flex items-stretch rounded-xl bg-zinc-900 border border-zinc-800 overflow-hidden">
-          <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-800/60 min-w-0">
+        <div class="flex items-stretch rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+          <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
             <div class="font-medium">${fmtDate(s.started_at)}</div>
             <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
-            ${s.exercise_names ? `<div class="text-xs text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
+            ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
           </button>
-          <button data-action="delete-session" data-id="${s.id}" class="px-3 text-zinc-600 hover:text-red-400" title="Delete workout">✕</button>
+          <button data-action="delete-session" data-id="${s.id}" class="px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
         </div>`).join('')
-        : '<div class="text-center text-zinc-600 py-12">No workouts yet — start your first one!</div>';
+        : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No workouts yet — start your first one!</div>';
       return `
-        <header class="py-5"><h1 class="text-2xl font-bold text-center">🏋️ Gym Tracker</h1></header>
+        <header class="flex items-center justify-between gap-2 py-5">
+          <h1 class="text-2xl font-bold">🏋️ Gym Tracker</h1>
+          ${themeSwitcherHtml()}
+        </header>
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
         <div class="space-y-2">${rows}</div>`;
     }
 
     function setFormHtml() {
       const d = openForm.draft;
-      const seg = (t, label) => `<button type="button" data-action="form-type" data-type="${t}" class="flex-1 py-1.5 rounded-lg text-sm transition-colors ${d.type === t ? 'bg-violet-600 text-white' : 'bg-zinc-800 text-zinc-400'}">${label}</button>`;
+      const seg = (t, label) => `<button type="button" data-action="form-type" data-type="${t}" class="flex-1 py-1.5 rounded-lg text-sm transition-colors ${d.type === t ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
       const fields = d.type === 'reps'
         ? `<div class="flex gap-2 mt-2">
              <input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">
@@ -172,15 +227,15 @@
              <input name="duration" value="${esc(d.duration)}" placeholder="mm:ss or sec" autocomplete="off" class="${inp} w-1/2 min-w-0">
              <input name="effort" value="${esc(d.effort)}" placeholder="effort (level 8…)" maxlength="120" autocomplete="off" class="${inp} w-1/2 min-w-0">
            </div>`;
-      return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-800/70 border border-zinc-700 p-2.5">
+      return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-100 dark:bg-zinc-800/70 border border-zinc-200 dark:border-zinc-700 p-2.5">
         <div class="flex gap-1.5">${seg('reps', 'Reps × Weight')}${seg('time', 'Time × Effort')}</div>
         ${fields}
         <input name="note" value="${esc(d.note)}" placeholder="note (optional)" maxlength="500" autocomplete="off" class="${inp} w-full mt-2">
-        ${openForm.error ? `<div class="text-red-400 text-xs mt-1.5">${esc(openForm.error)}</div>` : ''}
+        ${openForm.error ? `<div class="text-red-600 dark:text-red-400 text-xs mt-1.5">${esc(openForm.error)}</div>` : ''}
         <div class="flex items-center gap-2 mt-2">
           <button type="submit" class="flex-1 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">${openForm.setId ? 'Save' : 'Log set'}</button>
-          <button type="button" data-action="cancel-set-form" class="px-3 py-2 rounded-lg bg-zinc-700/60 text-sm">Cancel</button>
-          ${openForm.setId ? `<button type="button" data-action="delete-set" data-set="${openForm.setId}" class="px-3 py-2 rounded-lg text-red-400 text-sm" title="Delete set">Delete</button>` : ''}
+          <button type="button" data-action="cancel-set-form" class="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-700/60 text-sm">Cancel</button>
+          ${openForm.setId ? `<button type="button" data-action="delete-set" data-set="${openForm.setId}" class="px-3 py-2 rounded-lg text-red-600 dark:text-red-400 text-sm" title="Delete set">Delete</button>` : ''}
         </div>
       </form>`;
     }
@@ -189,26 +244,26 @@
       const noteHtml = editingNote === en.id
         ? `<input id="entry-note-input" data-entry="${en.id}" value="${esc(en.note || '')}" placeholder="Add a note…" maxlength="500" autocomplete="off" class="${inp} w-full mt-1.5">`
         : en.note
-          ? `<button data-action="add-note" data-entry="${en.id}" class="block w-full text-left mt-1 text-sm italic text-amber-200/80">${esc(en.note)}</button>`
-          : `<button data-action="add-note" data-entry="${en.id}" class="mt-0.5 text-xs text-zinc-600 hover:text-zinc-400">＋ note</button>`;
+          ? `<button data-action="add-note" data-entry="${en.id}" class="block w-full text-left mt-1 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(en.note)}</button>`
+          : `<button data-action="add-note" data-entry="${en.id}" class="mt-0.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       const lt = en.last_time
-        ? `<div class="mt-1.5 text-xs text-zinc-400 bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${en.last_time.sets.map((s) => esc(fmtSet(s))).join(', ')}</span></div>`
+        ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${en.last_time.sets.map((s) => esc(fmtSet(s))).join(', ')}</span></div>`
         : '';
       const setRows = en.sets.map((s, i) => {
         if (openForm && openForm.setId === s.id) return setFormHtml();
-        return `<button data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg hover:bg-zinc-800/60 text-left">
-          <span class="text-xs text-zinc-600 w-4 shrink-0">${i + 1}</span>
+        return `<button data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
+          <span class="text-xs text-zinc-400 dark:text-zinc-600 w-4 shrink-0">${i + 1}</span>
           <span class="font-mono">${esc(fmtSet(s))}</span>
           ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
         </button>`;
       }).join('');
       const addArea = openForm && openForm.entryId === en.id && !openForm.setId
         ? setFormHtml()
-        : `<button data-action="open-add-set" data-entry="${en.id}" class="mt-1 text-sm text-violet-400 hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
-      return `<div class="rounded-xl bg-zinc-900 border border-zinc-800 p-3 mb-3">
+        : `<button data-action="open-add-set" data-entry="${en.id}" class="mt-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
+      return `<div class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3 mb-3">
         <div class="flex items-center justify-between gap-2">
           <div class="font-semibold">${esc(en.name)}</div>
-          <button data-action="delete-entry" data-entry="${en.id}" class="text-zinc-600 hover:text-red-400 px-1" title="Remove exercise">✕</button>
+          <button data-action="delete-entry" data-entry="${en.id}" class="text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
         </div>
         ${noteHtml}
         ${lt}
@@ -219,10 +274,10 @@
 
     function pickerHtml() {
       return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-zinc-900 border-t border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
+        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
           <div class="flex items-center justify-between mb-2">
             <div class="font-semibold">Add exercise</div>
-            <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-300 px-2">✕</button>
+            <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <input id="picker-search" placeholder="Search or type a new exercise…" autocomplete="off" class="${inp} w-full mb-2">
           <div id="picker-list" class="overflow-y-auto space-y-0.5" style="min-height:8rem"></div>
@@ -233,19 +288,19 @@
     function sessionHtml() {
       const cards = session.entries.length
         ? session.entries.map(entryHtml).join('')
-        : '<div class="text-center text-zinc-600 py-10">No exercises yet — add one below.</div>';
+        : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-10">No exercises yet — add one below.</div>';
       return `
         <header class="flex items-center gap-2 py-4">
-          <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-100 text-lg">‹ Back</button>
+          <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
           <div class="ml-1">
             <div class="font-semibold">${fmtDate(session.started_at)}</div>
             <div class="text-xs text-zinc-500">Workout session</div>
           </div>
         </header>
         <div>${cards}</div>
-        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-700 text-violet-400 hover:border-violet-500 hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
+        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
         ${picker ? pickerHtml() : ''}
-        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-zinc-900 border border-zinc-700 px-5 py-2 shadow-lg z-10">
+        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
           <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
           <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
         </button>`;
@@ -258,9 +313,9 @@
       const ql = q.toLowerCase();
       const items = picker.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
       const exact = picker.list.some((x) => x.name.toLowerCase() === ql);
-      let html = items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800">${esc(x.name)}</button>`).join('');
-      if (q && !exact) html += `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-violet-400 hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
-      if (!html) html = '<div class="text-center text-zinc-600 text-sm py-6">Type a name to create your first exercise</div>';
+      let html = items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">${esc(x.name)}</button>`).join('');
+      if (q && !exact) html += `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-violet-600 dark:text-violet-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
+      if (!html) html = '<div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">Type a name to create your first exercise</div>';
       box.innerHTML = html;
     }
 
@@ -508,6 +563,11 @@
         case 'reset-stopwatch':
           stopwatchStart = Date.now();
           tick();
+          break;
+        case 'set-theme':
+          setThemePref(el.dataset.theme);
+          applyTheme();
+          render();
           break;
       }
     }
