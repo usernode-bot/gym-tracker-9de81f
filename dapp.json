@@ -1,3 +1,9 @@
 {
-  "secrets": []
+  "name": "Gym Tracker",
+  "icon": { "emoji": "🏋️" },
+  "secrets": [],
+  "tests": [
+    { "name": "Home renders with demo data", "path": "/?demo=1", "expectText": "Staging demo" },
+    { "name": "Home renders for real user", "path": "/", "expectText": "Start workout" }
+  ]
 }

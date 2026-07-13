@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
+
   <script>
   // usernode-dev-console@1
   (function () {
@@ -67,55 +67,449 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4">
-  <h1 class="text-2xl font-bold">Gym Tracker</h1>
-
-  <button id="press-btn" class="w-32 h-32 rounded-full bg-violet-600 hover:bg-violet-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-violet-600/30">
-    Press!
-  </button>
-
-  <div id="count" class="text-lg text-zinc-400">0 total presses</div>
-
-  <div class="w-full max-w-sm">
-    <h2 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h2>
-    <div id="leaderboard" class="space-y-1"></div>
-  </div>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+  <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
+  <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
 
   <script>
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token') || '';
-    const headers = token ? { 'x-usernode-token': token } : {};
+    const demo = params.get('demo') === '1';
+    const authHeaders = token ? { 'x-usernode-token': token } : {};
 
-    async function loadLeaderboard() {
-      const res = await fetch('/api/leaderboard', { headers });
-      if (!res.ok) return;
-      const { leaderboard } = await res.json();
-      const el = document.getElementById('leaderboard');
-      if (!leaderboard.length) {
-        el.innerHTML = '<p class="text-center text-zinc-600 text-sm">No presses yet</p>';
-        return;
-      }
-      el.innerHTML = leaderboard.map((r, i) =>
-        '<div class="flex justify-between px-3 py-1 rounded ' + (i === 0 ? 'bg-violet-600/20 text-violet-300' : 'text-zinc-400') + '">' +
-        '<span>' + (i + 1) + '. ' + r.username + '</span>' +
-        '<span class="font-mono">' + r.presses + '</span></div>'
-      ).join('');
-      const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
-      document.getElementById('count').textContent = total + ' total presses';
+    // ---------- state ----------
+    let view = 'home';        // 'home' | 'session'
+    let sessions = [];        // home list
+    let session = null;       // session detail payload
+    let picker = null;        // { query, list } when the add-exercise sheet is open
+    let openForm = null;      // { entryId, setId|null, draft, error } for the set form
+    let editingNote = null;   // entry id whose note input is open
+    let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
+    let toastTimer = null;
+
+    // ---------- helpers ----------
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function fmtDate(ts) {
+      const d = new Date(ts);
+      return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) +
+        ' · ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    function fmtDateShort(ts) {
+      return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    }
+    function fmtW(w) {
+      const n = parseFloat(w);
+      return Number.isFinite(n) ? String(n) : String(w);
+    }
+    function fmtDur(s) {
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    }
+    function parseDur(v) {
+      const t = String(v || '').trim();
+      if (/^\d+$/.test(t)) return parseInt(t, 10);
+      const m = t.match(/^(\d+):([0-5]?\d)$/);
+      if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+      return NaN;
+    }
+    function fmtSet(s) {
+      if (s.set_type === 'reps') return s.reps + ' × ' + fmtW(s.weight);
+      return fmtDur(s.duration_seconds) + (s.effort ? ' · ' + s.effort : '');
+    }
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.classList.add('hidden'), 3500);
     }
 
-    document.getElementById('press-btn').addEventListener('click', async () => {
-      try {
-        const res = await fetch('/api/press', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
+    async function api(method, url, body) {
+      if (method === 'GET' && demo) url += (url.includes('?') ? '&' : '?') + 'demo=1';
+      const res = await fetch(url, {
+        method,
+        headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Request failed (' + res.status + ')');
+      return data;
+    }
+
+    // ---------- rendering ----------
+    const inp = 'bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-violet-500';
+
+    function homeHtml() {
+      const rows = sessions.length ? sessions.map((s) => `
+        <div class="flex items-stretch rounded-xl bg-zinc-900 border border-zinc-800 overflow-hidden">
+          <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-800/60 min-w-0">
+            <div class="font-medium">${fmtDate(s.started_at)}</div>
+            <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
+            ${s.exercise_names ? `<div class="text-xs text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
+          </button>
+          <button data-action="delete-session" data-id="${s.id}" class="px-3 text-zinc-600 hover:text-red-400" title="Delete workout">✕</button>
+        </div>`).join('')
+        : '<div class="text-center text-zinc-600 py-12">No workouts yet — start your first one!</div>';
+      return `
+        <header class="py-5"><h1 class="text-2xl font-bold text-center">🏋️ Gym Tracker</h1></header>
+        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
+        <div class="space-y-2">${rows}</div>`;
+    }
+
+    function setFormHtml() {
+      const d = openForm.draft;
+      const seg = (t, label) => `<button type="button" data-action="form-type" data-type="${t}" class="flex-1 py-1.5 rounded-lg text-sm transition-colors ${d.type === t ? 'bg-violet-600 text-white' : 'bg-zinc-800 text-zinc-400'}">${label}</button>`;
+      const fields = d.type === 'reps'
+        ? `<div class="flex gap-2 mt-2">
+             <input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">
+             <input name="weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(d.weight)}" placeholder="weight" class="${inp} w-1/2 min-w-0">
+           </div>`
+        : `<div class="flex gap-2 mt-2">
+             <input name="duration" value="${esc(d.duration)}" placeholder="mm:ss or sec" autocomplete="off" class="${inp} w-1/2 min-w-0">
+             <input name="effort" value="${esc(d.effort)}" placeholder="effort (level 8…)" maxlength="120" autocomplete="off" class="${inp} w-1/2 min-w-0">
+           </div>`;
+      return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-800/70 border border-zinc-700 p-2.5">
+        <div class="flex gap-1.5">${seg('reps', 'Reps × Weight')}${seg('time', 'Time × Effort')}</div>
+        ${fields}
+        <input name="note" value="${esc(d.note)}" placeholder="note (optional)" maxlength="500" autocomplete="off" class="${inp} w-full mt-2">
+        ${openForm.error ? `<div class="text-red-400 text-xs mt-1.5">${esc(openForm.error)}</div>` : ''}
+        <div class="flex items-center gap-2 mt-2">
+          <button type="submit" class="flex-1 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">${openForm.setId ? 'Save' : 'Log set'}</button>
+          <button type="button" data-action="cancel-set-form" class="px-3 py-2 rounded-lg bg-zinc-700/60 text-sm">Cancel</button>
+          ${openForm.setId ? `<button type="button" data-action="delete-set" data-set="${openForm.setId}" class="px-3 py-2 rounded-lg text-red-400 text-sm" title="Delete set">Delete</button>` : ''}
+        </div>
+      </form>`;
+    }
+
+    function entryHtml(en) {
+      const noteHtml = editingNote === en.id
+        ? `<input id="entry-note-input" data-entry="${en.id}" value="${esc(en.note || '')}" placeholder="Add a note…" maxlength="500" autocomplete="off" class="${inp} w-full mt-1.5">`
+        : en.note
+          ? `<button data-action="add-note" data-entry="${en.id}" class="block w-full text-left mt-1 text-sm italic text-amber-200/80">${esc(en.note)}</button>`
+          : `<button data-action="add-note" data-entry="${en.id}" class="mt-0.5 text-xs text-zinc-600 hover:text-zinc-400">＋ note</button>`;
+      const lt = en.last_time
+        ? `<div class="mt-1.5 text-xs text-zinc-400 bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${en.last_time.sets.map((s) => esc(fmtSet(s))).join(', ')}</span></div>`
+        : '';
+      const setRows = en.sets.map((s, i) => {
+        if (openForm && openForm.setId === s.id) return setFormHtml();
+        return `<button data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg hover:bg-zinc-800/60 text-left">
+          <span class="text-xs text-zinc-600 w-4 shrink-0">${i + 1}</span>
+          <span class="font-mono">${esc(fmtSet(s))}</span>
+          ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
+        </button>`;
+      }).join('');
+      const addArea = openForm && openForm.entryId === en.id && !openForm.setId
+        ? setFormHtml()
+        : `<button data-action="open-add-set" data-entry="${en.id}" class="mt-1 text-sm text-violet-400 hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
+      return `<div class="rounded-xl bg-zinc-900 border border-zinc-800 p-3 mb-3">
+        <div class="flex items-center justify-between gap-2">
+          <div class="font-semibold">${esc(en.name)}</div>
+          <button data-action="delete-entry" data-entry="${en.id}" class="text-zinc-600 hover:text-red-400 px-1" title="Remove exercise">✕</button>
+        </div>
+        ${noteHtml}
+        ${lt}
+        <div class="mt-2">${setRows}</div>
+        ${addArea}
+      </div>`;
+    }
+
+    function pickerHtml() {
+      return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
+        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-zinc-900 border-t border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
+          <div class="flex items-center justify-between mb-2">
+            <div class="font-semibold">Add exercise</div>
+            <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-300 px-2">✕</button>
+          </div>
+          <input id="picker-search" placeholder="Search or type a new exercise…" autocomplete="off" class="${inp} w-full mb-2">
+          <div id="picker-list" class="overflow-y-auto space-y-0.5" style="min-height:8rem"></div>
+        </div>
+      </div>`;
+    }
+
+    function sessionHtml() {
+      const cards = session.entries.length
+        ? session.entries.map(entryHtml).join('')
+        : '<div class="text-center text-zinc-600 py-10">No exercises yet — add one below.</div>';
+      return `
+        <header class="flex items-center gap-2 py-4">
+          <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-400 hover:text-zinc-100 text-lg">‹ Back</button>
+          <div class="ml-1">
+            <div class="font-semibold">${fmtDate(session.started_at)}</div>
+            <div class="text-xs text-zinc-500">Workout session</div>
+          </div>
+        </header>
+        <div>${cards}</div>
+        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-700 text-violet-400 hover:border-violet-500 hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
+        ${picker ? pickerHtml() : ''}
+        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-zinc-900 border border-zinc-700 px-5 py-2 shadow-lg z-10">
+          <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
+          <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
+        </button>`;
+    }
+
+    function renderPickerList() {
+      const box = document.getElementById('picker-list');
+      if (!box || !picker) return;
+      const q = picker.query.trim();
+      const ql = q.toLowerCase();
+      const items = picker.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
+      const exact = picker.list.some((x) => x.name.toLowerCase() === ql);
+      let html = items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800">${esc(x.name)}</button>`).join('');
+      if (q && !exact) html += `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-violet-400 hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
+      if (!html) html = '<div class="text-center text-zinc-600 text-sm py-6">Type a name to create your first exercise</div>';
+      box.innerHTML = html;
+    }
+
+    function render() {
+      document.getElementById('app').innerHTML = view === 'home' ? homeHtml() : sessionHtml();
+      wireInputs();
+      tick();
+    }
+
+    function wireInputs() {
+      const form = document.getElementById('set-form');
+      if (form) {
+        form.addEventListener('submit', onSetSubmit);
+        const first = form.querySelector('input');
+        if (first) first.focus();
+      }
+      const ni = document.getElementById('entry-note-input');
+      if (ni) {
+        ni.focus();
+        ni.setSelectionRange(ni.value.length, ni.value.length);
+        ni.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); ni.blur(); }
+          else if (e.key === 'Escape') { ni.dataset.cancel = '1'; ni.blur(); }
         });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
-      } catch {}
+        ni.addEventListener('blur', async () => {
+          const cancelled = ni.dataset.cancel === '1';
+          const entryId = +ni.dataset.entry;
+          const val = ni.value;
+          editingNote = null;
+          if (cancelled) { render(); return; }
+          try { await api('PATCH', '/api/session-exercises/' + entryId, { note: val }); }
+          catch (err) { toast(err.message); }
+          await refreshSession();
+        });
+      }
+      if (picker) {
+        const si = document.getElementById('picker-search');
+        si.value = picker.query;
+        si.addEventListener('input', () => { picker.query = si.value; renderPickerList(); });
+        si.focus();
+        renderPickerList();
+      }
+    }
+
+    // ---------- set form ----------
+    function findEntryLocal(id) {
+      return session.entries.find((e) => e.id === id);
+    }
+    function draftFromSet(st) {
+      return {
+        type: st.set_type,
+        reps: st.reps ?? '',
+        weight: st.weight != null ? fmtW(st.weight) : '',
+        duration: st.duration_seconds != null ? fmtDur(st.duration_seconds) : '',
+        effort: st.effort || '',
+        note: st.note || '',
+      };
+    }
+    function prefillDraft(entryId) {
+      const en = findEntryLocal(entryId);
+      const src = (en.sets.length && en.sets[en.sets.length - 1]) ||
+        (en.last_time && en.last_time.sets.length && en.last_time.sets[en.last_time.sets.length - 1]);
+      if (src) { const d = draftFromSet(src); d.note = ''; return d; }
+      return { type: 'reps', reps: '', weight: '', duration: '', effort: '', note: '' };
+    }
+    function readDraft(form) {
+      const g = (n) => { const i = form.querySelector('[name="' + n + '"]'); return i ? i.value : ''; };
+      return { type: openForm.draft.type, reps: g('reps'), weight: g('weight'), duration: g('duration'), effort: g('effort'), note: g('note') };
+    }
+
+    async function onSetSubmit(e) {
+      e.preventDefault();
+      const d = readDraft(e.target);
+      openForm.draft = d;
+      const body = { set_type: d.type, note: d.note };
+      if (d.type === 'reps') {
+        if (d.reps.trim() === '') { openForm.error = 'Enter reps'; return render(); }
+        if (d.weight.trim() === '') { openForm.error = 'Enter weight (0 for bodyweight)'; return render(); }
+        body.reps = Number(d.reps);
+        body.weight = Number(d.weight);
+      } else {
+        const dur = parseDur(d.duration);
+        if (!Number.isInteger(dur) || dur < 1) { openForm.error = 'Enter duration as seconds or mm:ss'; return render(); }
+        body.duration_seconds = dur;
+        body.effort = d.effort;
+      }
+      try {
+        if (openForm.setId) {
+          await api('PATCH', '/api/sets/' + openForm.setId, body);
+          openForm = null;
+        } else {
+          await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
+          stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
+          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, note: '' }, error: '' };
+        }
+        await refreshSession();
+      } catch (err) {
+        openForm.error = err.message;
+        render();
+      }
+    }
+
+    // ---------- data loading ----------
+    async function loadHome() {
+      sessions = (await api('GET', '/api/sessions')).sessions;
+      view = 'home';
+      session = null;
+      render();
+    }
+    async function refreshSession() {
+      try {
+        session = await api('GET', '/api/sessions/' + session.id);
+        render();
+      } catch (err) {
+        toast(err.message);
+        await loadHome();
+      }
+    }
+    async function openSession(id) {
+      session = await api('GET', '/api/sessions/' + id);
+      view = 'session';
+      openForm = null;
+      editingNote = null;
+      picker = null;
+      seedStopwatch();
+      render();
+    }
+
+    // ---------- stopwatch (client-side only) ----------
+    function seedStopwatch() {
+      let newest = 0;
+      for (const en of session.entries) {
+        for (const st of en.sets) {
+          const t = new Date(st.created_at).getTime();
+          if (t > newest) newest = t;
+        }
+      }
+      stopwatchStart = newest && Date.now() - newest < 30 * 60 * 1000 ? newest : null;
+    }
+    function tick() {
+      const el = document.getElementById('stopwatch');
+      if (!el) return;
+      if (!stopwatchStart) { el.textContent = '—:—'; return; }
+      const s = Math.floor((Date.now() - stopwatchStart) / 1000);
+      if (s >= 3600) { stopwatchStart = null; el.textContent = '—:—'; return; }
+      el.textContent = fmtDur(s);
+    }
+    setInterval(tick, 1000);
+
+    // ---------- actions ----------
+    async function addExercise(exerciseId) {
+      await api('POST', '/api/sessions/' + session.id + '/exercises', { exercise_id: exerciseId });
+      picker = null;
+      await refreshSession();
+    }
+
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-action]');
+      if (!el) return;
+      const action = el.dataset.action;
+      // backdrop closes only on a direct click, not clicks inside the sheet
+      if (action === 'close-picker' && e.target !== el) return;
+      handle(action, el).catch((err) => toast(err.message));
     });
 
-    loadLeaderboard();
+    async function handle(action, el) {
+      switch (action) {
+        case 'start-workout': {
+          const s = await api('POST', '/api/sessions');
+          await openSession(s.id);
+          break;
+        }
+        case 'open-session':
+          await openSession(+el.dataset.id);
+          break;
+        case 'delete-session':
+          if (confirm('Delete this workout and everything in it?')) {
+            await api('DELETE', '/api/sessions/' + el.dataset.id);
+            await loadHome();
+          }
+          break;
+        case 'back-home':
+          openForm = null; editingNote = null; picker = null;
+          await loadHome();
+          break;
+        case 'open-picker': {
+          picker = { query: '', list: [] };
+          render();
+          const list = (await api('GET', '/api/exercises')).exercises;
+          if (picker) { picker.list = list; renderPickerList(); }
+          break;
+        }
+        case 'close-picker':
+          picker = null;
+          render();
+          break;
+        case 'pick-exercise':
+          await addExercise(+el.dataset.id);
+          break;
+        case 'create-exercise': {
+          const name = picker.query.trim();
+          const ex = await api('POST', '/api/exercises', { name });
+          await addExercise(ex.id);
+          break;
+        }
+        case 'delete-entry':
+          if (confirm('Remove this exercise and its sets?')) {
+            await api('DELETE', '/api/session-exercises/' + el.dataset.entry);
+            openForm = null;
+            await refreshSession();
+          }
+          break;
+        case 'add-note':
+          editingNote = +el.dataset.entry;
+          render();
+          break;
+        case 'open-add-set':
+          openForm = { entryId: +el.dataset.entry, setId: null, draft: prefillDraft(+el.dataset.entry), error: '' };
+          render();
+          break;
+        case 'edit-set': {
+          const en = findEntryLocal(+el.dataset.entry);
+          const st = en.sets.find((x) => x.id === +el.dataset.set);
+          openForm = { entryId: en.id, setId: st.id, draft: draftFromSet(st), error: '' };
+          render();
+          break;
+        }
+        case 'cancel-set-form':
+          openForm = null;
+          render();
+          break;
+        case 'delete-set':
+          await api('DELETE', '/api/sets/' + el.dataset.set);
+          openForm = null;
+          await refreshSession();
+          break;
+        case 'form-type': {
+          const form = document.getElementById('set-form');
+          if (form) openForm.draft = readDraft(form);
+          openForm.draft.type = el.dataset.type;
+          openForm.error = '';
+          render();
+          break;
+        }
+        case 'reset-stopwatch':
+          stopwatchStart = Date.now();
+          tick();
+          break;
+      }
+    }
+
+    loadHome().catch((err) => toast(err.message));
   </script>
 </body>
 </html>
