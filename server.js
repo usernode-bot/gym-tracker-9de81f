@@ -267,6 +267,9 @@ app.delete('/api/sessions/:id', wrap(async (req, res) => {
 
 // ---------- Exercises ----------
 
+// Returns the user's FULL exercise list (MRU-first, no LIMIT) — the picker
+// fetches once and filters client-side, so a row cap silently hides older
+// exercises from search.
 app.get('/api/exercises', wrap(async (req, res) => {
   const uid = readUserId(req);
   const q = String(req.query.q || '').trim();
@@ -277,8 +280,7 @@ app.get('/api/exercises', wrap(async (req, res) => {
      LEFT JOIN session_exercises se ON se.exercise_id = e.id
      WHERE e.user_id = $1 AND e.name ILIKE $2
      GROUP BY e.id
-     ORDER BY GREATEST(e.created_at, COALESCE(MAX(se.created_at), e.created_at)) DESC, e.id DESC
-     LIMIT 50`,
+     ORDER BY GREATEST(e.created_at, COALESCE(MAX(se.created_at), e.created_at)) DESC, e.id DESC`,
     [uid, pattern]
   );
   res.json({ exercises: rows });
