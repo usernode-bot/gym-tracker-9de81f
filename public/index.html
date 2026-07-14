@@ -121,11 +121,13 @@
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
-    let progressHub = null;   // { query, list } — Progress hub exercise list
+    let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
     let exerciseView = null;  // { data, metric, from } — per-exercise chart screen
     let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
     let muscleEditor = null;  // { selected } while the muscle tag-edit sheet is open
+    let bwEditor = null;      // truthy while the bodyweight sheet is open
     let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
+    let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set', id, timer } — deferred swipe delete in its undo window
@@ -237,6 +239,40 @@
     const MUSCLE_LABELS = { chest: 'Chest', back: 'Back', shoulders: 'Shoulders', biceps: 'Biceps', triceps: 'Triceps', quads: 'Quads', hamstrings: 'Hamstrings', glutes: 'Glutes', calves: 'Calves', core: 'Core', forearms: 'Forearms' };
     const MUSCLE_SLUGS = Object.keys(MUSCLE_LABELS);
     const METRIC_LABELS = { maxw: 'Max weight', vol: 'Volume', e1rm: 'Est. 1RM', maxdur: 'Longest set', totaldur: 'Total time', sets: 'Sets' };
+
+    // Strength-level thresholds: multiples of bodyweight applied to the
+    // muscle's current Est. 1RM — [novice, intermediate, advanced]; any score
+    // below novice = beginner, no live score = unrated. Heuristics anchored
+    // to each muscle's classic lift (bench, squat, deadlift, OHP, …).
+    const STRENGTH_THRESHOLDS = {
+      chest: [0.60, 1.00, 1.50], back: [0.90, 1.40, 2.00], shoulders: [0.40, 0.65, 0.95],
+      biceps: [0.30, 0.50, 0.75], triceps: [0.50, 0.85, 1.25], quads: [0.75, 1.25, 1.75],
+      hamstrings: [0.90, 1.40, 2.00], glutes: [1.00, 1.50, 2.25], calves: [1.00, 1.50, 2.25],
+      core: [0.30, 0.50, 0.75], forearms: [0.30, 0.50, 0.75],
+    };
+    const LEVEL_LABELS = ['Beginner', 'Novice', 'Intermediate', 'Advanced'];
+    // Sequential single-hue ramp, one entry per level (light / dark). Dark
+    // mode inverts lightness so "deeper = stronger" reads on both themes.
+    const LEVEL_FILLS = [
+      'fill-violet-200 dark:fill-violet-900',
+      'fill-violet-400 dark:fill-violet-700',
+      'fill-violet-600 dark:fill-violet-500',
+      'fill-violet-800 dark:fill-violet-300',
+    ];
+    const LEVEL_DOTS = [
+      'bg-violet-200 dark:bg-violet-900',
+      'bg-violet-400 dark:bg-violet-700',
+      'bg-violet-600 dark:bg-violet-500',
+      'bg-violet-800 dark:bg-violet-300',
+    ];
+
+    function strengthLevel(muscle, scoreKg, bwKg) {
+      const th = STRENGTH_THRESHOLDS[muscle];
+      if (!th || !(scoreKg > 0) || !(bwKg > 0)) return null;
+      const r = scoreKg / bwKg;
+      const level = r >= th[2] ? 3 : r >= th[1] ? 2 : r >= th[0] ? 1 : 0;
+      return { level, label: LEVEL_LABELS[level] };
+    }
 
     function themeSwitcherHtml() {
       const pref = getThemePref();
@@ -442,9 +478,15 @@
 
     // One clickable muscle region: shapes inherit the group's fill so hover /
     // theming lives in one class list. <g> works with the delegated click
-    // handler (closest()/dataset work on SVG elements).
+    // handler (closest()/dataset work on SVG elements). Rated muscles (score
+    // + bodyweight known) tint by strength level; the rest keep neutral zinc.
     function bodyRegion(slug, shapes) {
-      return `<g data-action="open-muscle-chart" data-muscle="${slug}" class="cursor-pointer fill-zinc-400 dark:fill-zinc-600 hover:fill-violet-500 dark:hover:fill-violet-500 transition-colors"><title>${MUSCLE_LABELS[slug]}</title>${shapes}</g>`;
+      const lv = hubLevel(slug);
+      const cls = lv
+        ? `cursor-pointer ${LEVEL_FILLS[lv.level]} hover:opacity-70 transition-opacity`
+        : 'cursor-pointer fill-zinc-400 dark:fill-zinc-600 hover:fill-violet-500 dark:hover:fill-violet-500 transition-colors';
+      const title = MUSCLE_LABELS[slug] + (lv ? ' — ' + lv.label : '');
+      return `<g data-action="open-muscle-chart" data-muscle="${slug}" class="${cls}"><title>${title}</title>${shapes}</g>`;
     }
 
     // Schematic front/back figure — neutral filler (head, hands, joints)
@@ -481,14 +523,29 @@
     }
 
     function bodyDiagramHtml() {
-      // The chip row is the accessible/keyboard path — SVG paths aren't focusable.
-      const chips = MUSCLE_SLUGS.map((m) => `<button data-action="open-muscle-chart" data-muscle="${m}" class="px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-400">${MUSCLE_LABELS[m]}</button>`).join('');
+      // The chip row is the accessible/keyboard path — SVG paths aren't
+      // focusable — so each chip also carries its level (dot + aria-label).
+      const chips = MUSCLE_SLUGS.map((m) => {
+        const lv = hubLevel(m);
+        const label = MUSCLE_LABELS[m] + (lv ? ' — ' + lv.label : '');
+        const dot = lv ? `<span class="inline-block w-2 h-2 rounded-full mr-1 align-baseline ${LEVEL_DOTS[lv.level]}" aria-hidden="true"></span>` : '';
+        return `<button data-action="open-muscle-chart" data-muscle="${m}" title="${esc(label)}" aria-label="${esc(label)}" class="px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-400">${dot}${MUSCLE_LABELS[m]}</button>`;
+      }).join('');
+      const legend = bodyweightKg
+        ? `<div class="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-3">${LEVEL_LABELS.map((l, i) =>
+            `<span class="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400"><span class="inline-block w-2.5 h-2.5 rounded-sm ${LEVEL_DOTS[i]}" aria-hidden="true"></span>${l}</span>`).join('')}</div>`
+        : '<div class="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-3">Set your bodyweight to see strength levels</div>';
+      const bwBtn = demo ? '' : `<div class="text-center mt-2">
+          <button data-action="open-bw-editor" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300">Bodyweight: ${bodyweightKg ? esc(fmtW(bodyweightKg) + ' ' + weightUnit) + ' · edit' : '— · set'}</button>
+        </div>`;
       return `<div data-body-diagram class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
         <div class="flex justify-center gap-3">
           <svg viewBox="0 0 200 316" class="w-1/2 max-w-[170px]" aria-hidden="true">${figureSvg('front')}</svg>
           <svg viewBox="0 0 200 316" class="w-1/2 max-w-[170px]" aria-hidden="true">${figureSvg('back')}</svg>
         </div>
         <div class="flex flex-wrap justify-center gap-1.5 mt-3">${chips}</div>
+        ${legend}
+        ${bwBtn}
       </div>`;
     }
 
@@ -502,10 +559,35 @@
           </div>
           ${unitSwitcherHtml()}
         </header>
-        ${bodyDiagramHtml()}
+        <div id="body-diagram-slot">${bodyDiagramHtml()}</div>
         <div class="mt-5 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">By exercise</div>
         <input id="progress-search" placeholder="Search exercises…" autocomplete="off" class="${inp} w-full mb-2">
-        <div id="progress-list" class="space-y-0.5 pb-6"></div>`;
+        <div id="progress-list" class="space-y-0.5 pb-6"></div>
+        ${bwEditor ? bwEditorHtml() : ''}`;
+    }
+
+    // Late-fill pass for the body diagram (same pattern as renderProgressList):
+    // the hub paints instantly, the tint lands when the summary fetch returns.
+    function renderBodyDiagram() {
+      const slot = document.getElementById('body-diagram-slot');
+      if (slot && progressHub) slot.innerHTML = bodyDiagramHtml();
+    }
+
+    function bwEditorHtml() {
+      return `<div data-action="close-bw-editor" class="fixed inset-0 bg-black/60 z-20">
+        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="font-semibold">Bodyweight</div>
+            <button data-action="close-bw-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+          </div>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">Used to rate each muscle's strength level against your lifts. Leave empty to clear.</div>
+          <div class="relative">
+            <input id="bw-input" type="number" min="0" step="any" inputmode="decimal" placeholder="bodyweight (${weightUnit})" class="${inp} w-full pr-9">
+            <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
+          </div>
+          <button data-action="save-bw" class="w-full mt-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Save</button>
+        </div>
+      </div>`;
     }
 
     function renderProgressList() {
@@ -581,6 +663,110 @@
         cur.setDate(cur.getDate() + 7);
       }
       return out;
+    }
+
+    // ---------- muscle strength (Est. 1RM rollup) ----------
+
+    // An exercise's estimate stops counting 12 weeks after its last weighted
+    // work — matching the summary endpoint's 84-day window.
+    const STRENGTH_EXPIRY_MS = 84 * 24 * 3600 * 1000;
+
+    // Epley from one weighted reps-set — same math as the exercise chart's
+    // e1rm metric in sessionMetricValue.
+    function setE1rm(reps, weight) {
+      const w = parseFloat(weight);
+      return w > 0 ? w * (1 + (reps || 0) / 30) : null;
+    }
+
+    // Record a (exercise, week) best-set e1RM into exWeeks:
+    // Map(exId → { name, weeks: Map(weekMs → e1rm) }).
+    function recordE1rm(exWeeks, exId, exName, weekMs, v) {
+      let ex = exWeeks.get(exId);
+      if (!ex) { ex = { name: exName, weeks: new Map() }; exWeeks.set(exId, ex); }
+      if (!(ex.weeks.get(weekMs) >= v)) ex.weeks.set(weekMs, v);
+    }
+
+    // Shared rollup core: walk continuous Monday weeks (first data week →
+    // current week) carrying each exercise's latest weekly e1RM forward until
+    // it expires, and take the max across exercises per week. Weeks where
+    // nothing is live are omitted (an est. 1RM of 0 would be wrong, unlike
+    // volume). Returns { points, current, perExercise }: `current` is the
+    // value at the current week (null when everything expired) and
+    // perExercise maps exId → its latest live e1RM in kg.
+    function strengthSeries(exWeeks) {
+      let first = Infinity;
+      for (const ex of exWeeks.values()) for (const t of ex.weeks.keys()) first = Math.min(first, t);
+      if (!Number.isFinite(first)) return { points: [], current: null, perExercise: new Map() };
+      const last = weekStartMs(Date.now());
+      const points = [];
+      const latest = new Map(); // exId → { t, v, name } (most recent weekly value)
+      const cur = new Date(first);
+      let current = null;
+      let steps = 0;
+      while (cur.getTime() <= last && steps++ < 1040) {
+        const t = cur.getTime();
+        for (const [id, ex] of exWeeks) {
+          const v = ex.weeks.get(t);
+          if (v !== undefined) latest.set(id, { t, v, name: ex.name });
+        }
+        let best = null;
+        for (const [id, l] of latest) {
+          if (t - l.t > STRENGTH_EXPIRY_MS) continue;
+          if (!best || l.v > best.v) best = { t, v: l.v, exId: id, exName: l.name };
+        }
+        if (best) points.push(best);
+        current = best;
+        cur.setDate(cur.getDate() + 7);
+      }
+      const perExercise = new Map();
+      for (const [id, l] of latest) {
+        if (last - l.t <= STRENGTH_EXPIRY_MS) perExercise.set(id, l.v);
+      }
+      return { points, current, perExercise };
+    }
+
+    // Strength series for the muscle drill-in, from the history payload's
+    // raw per-session sets.
+    function muscleStrength(data) {
+      const exWeeks = new Map();
+      for (const s of data.sessions) {
+        const t = weekStartMs(new Date(s.started_at).getTime());
+        for (const st of s.sets) {
+          if (st.set_type !== 'reps') continue;
+          const v = setE1rm(st.reps, st.weight);
+          if (v !== null) recordE1rm(exWeeks, st.exercise_id, st.exercise_name, t, v);
+        }
+      }
+      return strengthSeries(exWeeks);
+    }
+
+    // Per-muscle current scores for the Progress hub, from the summary
+    // endpoint's flat weighted-set rows (an exercise tagged with two muscles
+    // counts toward both). Returns { slug: { score, exName } }.
+    function muscleStrengthSummary(rows) {
+      const byMuscle = new Map();
+      for (const r of rows) {
+        const v = setE1rm(r.reps, r.weight);
+        if (v === null) continue;
+        const t = weekStartMs(new Date(r.started_at).getTime());
+        for (const m of r.muscles || []) {
+          let exWeeks = byMuscle.get(m);
+          if (!exWeeks) { exWeeks = new Map(); byMuscle.set(m, exWeeks); }
+          recordE1rm(exWeeks, r.exercise_id, r.exercise_name, t, v);
+        }
+      }
+      const out = {};
+      for (const [m, exWeeks] of byMuscle) {
+        const cur = strengthSeries(exWeeks).current;
+        if (cur) out[m] = { score: cur.v, exName: cur.exName };
+      }
+      return out;
+    }
+
+    // Level for a muscle on the Progress hub, or null (no score / no bodyweight).
+    function hubLevel(slug) {
+      const s = progressHub && progressHub.strength && progressHub.strength[slug];
+      return s ? strengthLevel(slug, s.score, bodyweightKg) : null;
     }
 
     // Axis/gridline label for a metric value (kg → display unit for weights).
@@ -692,22 +878,39 @@
         body = `<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No sets logged yet for ${label}-tagged exercises.</div>`;
       } else {
         const weeks = muscleWeeks(mv.data);
-        const points = weeks.map((w) => ({ t: w.t, v: mv.metric === 'vol' ? w.vol : w.sets }));
+        const strength = muscleStrength(mv.data);
+        const hasWeighted = mv.data.sessions.some((s) => s.sets.some((st) => st.set_type === 'reps' && parseFloat(st.weight) > 0));
+        const metrics = hasWeighted ? ['e1rm', 'vol', 'sets'] : ['vol', 'sets'];
+        const points = mv.metric === 'e1rm'
+          ? strength.points.map((p) => ({ t: p.t, v: p.v }))
+          : weeks.map((w) => ({ t: w.t, v: mv.metric === 'vol' ? w.vol : w.sets }));
+        let headline = '';
+        if (mv.metric === 'e1rm' && strength.current) {
+          const lv = strengthLevel(mv.muscle, strength.current.v, bodyweightKg);
+          headline = `<div class="mb-2 text-sm text-zinc-600 dark:text-zinc-300">
+            <span class="font-semibold">Est. 1RM: ${fmtMetricVal('e1rm', strength.current.v)} ${weightUnit}</span>
+            ${lv ? `<span class="ml-1 px-2 py-0.5 rounded-full bg-violet-600/10 text-violet-700 dark:text-violet-300 text-xs">${lv.label}</span>` : ''}
+            <span class="text-xs text-zinc-500">· via</span>
+            <button data-action="open-exercise-chart" data-id="${strength.current.exId}" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 underline decoration-dotted underline-offset-2">${esc(strength.current.exName)}</button>
+          </div>`;
+        }
         const counts = new Map();
         for (const s of mv.data.sessions) for (const st of s.sets) {
           counts.set(st.exercise_id, (counts.get(st.exercise_id) || 0) + 1);
         }
         const exRows = mv.data.exercises.map((x) => {
           const n = counts.get(x.id) || 0;
+          const e1 = strength.perExercise.get(x.id);
           return `<button data-action="open-exercise-chart" data-id="${x.id}" class="w-full flex items-baseline justify-between gap-2 text-left px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60">
             <span class="text-sm font-medium truncate">${esc(x.name)}</span>
-            <span class="text-xs text-zinc-500 shrink-0">${n} set${n === 1 ? '' : 's'}</span>
+            <span class="text-xs text-zinc-500 shrink-0">${n} set${n === 1 ? '' : 's'}${e1 ? ' · ' + fmtMetricVal('e1rm', e1) + ' ' + weightUnit + ' e1RM' : ''}</span>
           </button>`;
         }).join('');
         body = `
-          ${metricToggleHtml(['vol', 'sets'], mv.metric)}
-          <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">Weekly ${mv.metric === 'vol' ? 'volume · ' + weightUnit : 'sets'}</div>
-          ${chartSvgHtml(points, (v) => fmtMetricVal(mv.metric === 'vol' ? 'vol' : 'sets', v))}
+          ${metricToggleHtml(metrics, mv.metric)}
+          ${headline}
+          <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${mv.metric === 'e1rm' ? 'Est. 1RM · ' + weightUnit : 'Weekly ' + (mv.metric === 'vol' ? 'volume · ' + weightUnit : 'sets')}</div>
+          ${chartSvgHtml(points, (v) => fmtMetricVal(mv.metric, v))}
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">Exercises</div>
           <div class="space-y-1.5 pb-6">${exRows}</div>`;
       }
@@ -724,20 +927,29 @@
     }
 
     async function openProgress() {
-      progressHub = { query: '', list: [] };
-      exerciseView = null; muscleView = null; muscleEditor = null;
+      progressHub = { query: '', list: [], strength: null };
+      exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
       openForm = null; picker = null; importSheet = null;
       view = 'progress';
       render();
-      const list = (await api('GET', '/api/exercises')).exercises;
-      if (progressHub) { progressHub.list = list; renderProgressList(); }
+      // Summary failures only cost the tint — never block the hub.
+      const [listRes, sumRes] = await Promise.all([
+        api('GET', '/api/exercises'),
+        api('GET', '/api/muscles/summary').catch(() => null),
+      ]);
+      if (progressHub) {
+        progressHub.list = listRes.exercises;
+        if (sumRes) progressHub.strength = muscleStrengthSummary(sumRes.sets);
+        renderProgressList();
+        renderBodyDiagram();
+      }
     }
 
     async function openExerciseChart(id, from) {
       const data = await api('GET', '/api/exercises/' + id + '/history');
       const metrics = exerciseMetrics(data);
       exerciseView = { data, metric: metrics[0] || 'maxw', from: from || 'progress' };
-      muscleView = null; muscleEditor = null;
+      muscleView = null; muscleEditor = null; bwEditor = null;
       view = 'exercise';
       render();
     }
@@ -745,10 +957,12 @@
     async function openMuscleChart(slug) {
       const data = await api('GET', '/api/muscles/' + slug + '/history');
       const weeks = muscleWeeks(data);
-      // Volume is the default; a muscle trained only with timed/bodyweight
-      // work (all-zero volume) falls back to the Sets metric.
-      muscleView = { muscle: slug, data, metric: weeks.some((w) => w.vol > 0) ? 'vol' : 'sets' };
-      exerciseView = null; muscleEditor = null;
+      // Est. 1RM is the default whenever weighted work exists; a muscle
+      // trained only with timed/bodyweight work (all-zero volume) falls back
+      // to Volume → Sets as before.
+      const hasWeighted = data.sessions.some((s) => s.sets.some((st) => st.set_type === 'reps' && parseFloat(st.weight) > 0));
+      muscleView = { muscle: slug, data, metric: hasWeighted ? 'e1rm' : (weeks.some((w) => w.vol > 0) ? 'vol' : 'sets') };
+      exerciseView = null; muscleEditor = null; bwEditor = null;
       view = 'muscle';
       render();
     }
@@ -842,6 +1056,13 @@
           ps.value = progressHub.query;
           ps.addEventListener('input', () => { progressHub.query = ps.value; renderProgressList(); });
           renderProgressList();
+        }
+      }
+      if (bwEditor) {
+        const bi = document.getElementById('bw-input');
+        if (bi) {
+          if (bodyweightKg) bi.value = String(kgToUnitNum(bodyweightKg));
+          bi.focus();
         }
       }
     }
@@ -1289,7 +1510,7 @@
       if (Date.now() < suppressClicksUntil && !el.closest('#undo-toast')) { suppressClicksUntil = 0; return; }
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
-      if ((action === 'close-picker' || action === 'close-import' || action === 'close-muscle-editor') && e.target !== el) return;
+      if ((action === 'close-picker' || action === 'close-import' || action === 'close-muscle-editor' || action === 'close-bw-editor') && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
@@ -1317,7 +1538,7 @@
           break;
         case 'back-home':
           openForm = null; editingNote = null; editingSessionNote = false; picker = null;
-          progressHub = null; exerciseView = null; muscleView = null; muscleEditor = null;
+          progressHub = null; exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
           await loadHome();
           break;
         case 'open-progress':
@@ -1367,6 +1588,29 @@
           const r = await api('PATCH', '/api/exercises/' + exerciseView.data.id, { muscles: muscleEditor.selected });
           exerciseView.data.muscles = r.muscles;
           muscleEditor = null;
+          render();
+          break;
+        }
+        case 'open-bw-editor':
+          bwEditor = true;
+          render();
+          break;
+        case 'close-bw-editor':
+          bwEditor = null;
+          render();
+          break;
+        case 'save-bw': {
+          const bi = document.getElementById('bw-input');
+          const raw = ((bi && bi.value) || '').trim();
+          let kg = null;
+          if (raw !== '') {
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n <= 0) { toast('Enter a valid bodyweight'); break; }
+            kg = unitToKg(n); // input is in the display unit, stored in kg
+          }
+          const r = await api('PATCH', '/api/settings', { bodyweight_kg: kg });
+          bodyweightKg = r.bodyweight_kg !== null ? parseFloat(r.bodyweight_kg) || null : null;
+          bwEditor = null;
           render();
           break;
         }
@@ -1522,8 +1766,12 @@
 
     // The unit preference must be known before the first weights render.
     (async () => {
-      try { weightUnit = (await api('GET', '/api/settings')).weight_unit === 'lbs' ? 'lbs' : 'kg'; }
-      catch (_) {} // default to kg — never block the app on the setting
+      try {
+        const st = await api('GET', '/api/settings');
+        weightUnit = st.weight_unit === 'lbs' ? 'lbs' : 'kg';
+        bodyweightKg = st.bodyweight_kg !== null && st.bodyweight_kg !== undefined ? parseFloat(st.bodyweight_kg) || null : null;
+      }
+      catch (_) {} // default to kg / no bodyweight — never block the app on the setting
       // ?session=<id> deep-links straight into that session's view, and
       // &picker=1 also opens the add-exercise sheet — like ?import=1, this
       // lets the proposal checks reach screens that otherwise need clicks.

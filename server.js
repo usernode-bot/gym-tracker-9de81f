@@ -419,6 +419,28 @@ app.get('/api/muscles/:muscle/history', wrap(async (req, res) => {
   res.json({ muscle, exercises, sessions });
 }));
 
+// Raw weighted reps-sets from the last 84 days across ALL tagged exercises —
+// the client rolls these up into per-muscle strength scores/levels for the
+// Progress hub's body-map tinting (aggregation stays client-side, matching
+// the raw-sets convention above; 84 days = the client's 12-week expiry).
+app.get('/api/muscles/summary', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const { rows } = await pool.query(
+    `SELECT se.exercise_id, e.name AS exercise_name, e.muscles, s.started_at, st.reps, st.weight
+     FROM sets st
+     JOIN session_exercises se ON se.id = st.session_exercise_id
+     JOIN exercises e ON e.id = se.exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $1 AND e.user_id = $1
+       AND st.set_type = 'reps' AND st.weight > 0
+       AND e.muscles IS NOT NULL AND array_length(e.muscles, 1) > 0
+       AND s.started_at >= NOW() - INTERVAL '84 days'
+     ORDER BY s.started_at`,
+    [uid]
+  );
+  res.json({ sets: rows });
+}));
+
 // ---------- Session exercises (entries) ----------
 
 app.post('/api/sessions/:id/exercises', wrap(async (req, res) => {
@@ -720,23 +742,51 @@ app.post('/api/import', wrap(async (req, res) => {
 app.get('/api/settings', wrap(async (req, res) => {
   const uid = readUserId(req);
   const { rows } = await pool.query(
-    'SELECT weight_unit FROM user_settings WHERE user_id = $1',
+    'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
     [uid]
   );
-  res.json({ weight_unit: rows[0] ? rows[0].weight_unit : 'kg' });
+  res.json({
+    weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
+    bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+  });
 }));
 
+// Partial update: only the fields present in the body are validated and
+// written, so a unit toggle never clobbers bodyweight and vice versa.
 app.patch('/api/settings', wrap(async (req, res) => {
-  const unit = req.body && req.body.weight_unit;
-  if (unit !== 'kg' && unit !== 'lbs') {
+  const body = req.body || {};
+  const hasUnit = Object.prototype.hasOwnProperty.call(body, 'weight_unit');
+  const hasBw = Object.prototype.hasOwnProperty.call(body, 'bodyweight_kg');
+  if (!hasUnit && !hasBw) {
+    return res.status(400).json({ error: 'Nothing to update' });
+  }
+  if (hasUnit && body.weight_unit !== 'kg' && body.weight_unit !== 'lbs') {
     return res.status(400).json({ error: 'weight_unit must be "kg" or "lbs"' });
   }
+  let bw = null;
+  if (hasBw && body.bodyweight_kg !== null) {
+    bw = Number(body.bodyweight_kg);
+    if (!Number.isFinite(bw) || bw < 20 || bw > 400) {
+      return res.status(400).json({ error: 'bodyweight_kg must be a number between 20 and 400, or null' });
+    }
+    bw = Math.round(bw * 100) / 100;
+  }
   await pool.query(
-    `INSERT INTO user_settings (user_id, weight_unit) VALUES ($1, $2)
-     ON CONFLICT (user_id) DO UPDATE SET weight_unit = EXCLUDED.weight_unit`,
-    [req.user.id, unit]
+    `INSERT INTO user_settings (user_id, weight_unit, bodyweight_kg)
+     VALUES ($1, COALESCE($2, 'kg'), $3)
+     ON CONFLICT (user_id) DO UPDATE SET
+       weight_unit = COALESCE($2, user_settings.weight_unit),
+       bodyweight_kg = CASE WHEN $4 THEN $3 ELSE user_settings.bodyweight_kg END`,
+    [req.user.id, hasUnit ? body.weight_unit : null, hasBw ? bw : null, hasBw]
   );
-  res.json({ weight_unit: unit });
+  const { rows } = await pool.query(
+    'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
+    [req.user.id]
+  );
+  res.json({
+    weight_unit: rows[0].weight_unit,
+    bodyweight_kg: rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+  });
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -836,6 +886,9 @@ async function migrate() {
       weight_unit TEXT NOT NULL DEFAULT 'kg' CHECK (weight_unit IN ('kg', 'lbs'))
     )
   `);
+  // Bodyweight (kg, like every stored weight) powers the strength-level
+  // categories; NULL = not set, levels stay hidden.
+  await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bodyweight_kg NUMERIC(5,2)`);
   // Every row is per-user workout content the UI gates to its owner, so the
   // whole chain is private (staging gets schema only, no prod rows).
   await pool.query(`COMMENT ON TABLE exercises IS 'staging:private'`);
@@ -883,14 +936,18 @@ async function seedStagingDemo() {
   }
   // Sessions 900003–900005 are OLDER history so the progress charts have a
   // multi-week trend (bench in every session, plank in two) while the
-  // newest-session "Last time" demo behaviour above stays intact.
+  // newest-session "Last time" demo behaviour above stays intact. Session
+  // 900006 adds a heavy squat week so quads/glutes get a strength trend, and
+  // set 900022 keeps the deload bench week's e1RM ≥ 1×bodyweight so the demo
+  // chest level reads Intermediate on any weekday.
   await pool.query(`
     INSERT INTO workout_sessions (id, user_id, started_at, note) VALUES
       (900001, 900001, NOW() - INTERVAL '3 days', NULL),
       (900002, 900001, NOW() - INTERVAL '2 hours', 'Staging demo workout note — deload week'),
       (900003, 900001, NOW() - INTERVAL '24 days', NULL),
       (900004, 900001, NOW() - INTERVAL '17 days', NULL),
-      (900005, 900001, NOW() - INTERVAL '10 days', NULL)
+      (900005, 900001, NOW() - INTERVAL '10 days', NULL),
+      (900006, 900001, NOW() - INTERVAL '9 days', NULL)
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -904,7 +961,8 @@ async function seedStagingDemo() {
       (900007, 900003, 900003, NULL, NOW() - INTERVAL '24 days' + INTERVAL '15 minutes'),
       (900008, 900004, 900001, NULL, NOW() - INTERVAL '17 days'),
       (900009, 900004, 900003, NULL, NOW() - INTERVAL '17 days' + INTERVAL '15 minutes'),
-      (900010, 900005, 900001, NULL, NOW() - INTERVAL '10 days')
+      (900010, 900005, 900001, NULL, NOW() - INTERVAL '10 days'),
+      (900011, 900006, 900002, NULL, NOW() - INTERVAL '9 days')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -926,13 +984,23 @@ async function seedStagingDemo() {
       (900015, 900008, 'reps', 7, 52.5, NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '17 days' + INTERVAL '3 minutes'),
       (900016, 900009, 'time', NULL, NULL, 50, 'steady', NULL,    FALSE, NULL,                    NOW() - INTERVAL '17 days' + INTERVAL '15 minutes'),
       (900017, 900010, 'reps', 8, 55,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '10 days'),
-      (900018, 900010, 'reps', 8, 55,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '10 days' + INTERVAL '3 minutes')
+      (900018, 900010, 'reps', 8, 55,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '10 days' + INTERVAL '3 minutes'),
+      (900022, 900003, 'reps', 5, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '8 minutes'),
+      (900019, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days'),
+      (900020, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '3 minutes'),
+      (900021, 900011, 'reps', 6, 75,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '6 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
     INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
     ON CONFLICT (user_id) DO NOTHING
   `);
+  // Demo bodyweight for the strength levels: like the demo muscle tags above,
+  // long-lived staging DBs already have the settings row (insert skipped), so
+  // backfill idempotently without clobbering a value that's already set.
+  await pool.query(
+    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
+  );
 }
 
 async function start() {
