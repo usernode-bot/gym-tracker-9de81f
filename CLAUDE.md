@@ -39,13 +39,20 @@ view. All workout data is strictly private per user.
 
 ## App-specific conventions
 
-- **All four workout tables are `staging:private`**: `exercises`,
-  `workout_sessions`, `session_exercises`, `sets`. Every row is
-  per-user content; staging gets schema only. Staging demo data is
-  seeded idempotently on boot under fake `user_id = 900001` (ids
-  900001+), surfaced read-only via `?demo=1` on GET routes.
-- **Weight is unit-agnostic** — a bare NUMERIC, displayed as entered.
-  No kg/lb column or conversion.
+- **All five workout tables are `staging:private`**: `exercises`,
+  `workout_sessions`, `session_exercises`, `sets`, `user_settings`.
+  Every row is per-user content; staging gets schema only. Staging
+  demo data is seeded idempotently on boot under fake
+  `user_id = 900001` (ids 900001+), surfaced read-only via `?demo=1`
+  on GET routes.
+- **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
+  in the DB and in export/import JSON. The client converts for
+  display and input only, per the user's `user_settings.weight_unit`
+  (`'kg'` default, or `'lbs'`; `GET`/`PATCH /api/settings`), using
+  1 kg = 2.20462 lbs: lbs display rounds to 1 decimal, lbs input is
+  converted back to kg (2 decimals) before saving. When a weight
+  field is left untouched while editing, the exact stored kg is
+  re-saved (no round-trip drift).
 - **Sets are one of two shapes** (`set_type`): `'reps'` populates
   `reps` + `weight`; `'time'` populates `duration_seconds` + optional
   free-text `effort`. The other type's columns are NULL — keep that

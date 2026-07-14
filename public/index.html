@@ -121,6 +121,7 @@
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
+    let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set', id, timer } — deferred swipe delete in its undo window
@@ -167,8 +168,20 @@
     function fmtDateShort(ts) {
       return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
     }
+    // Weights are stored in kg; convert only for display / input. lbs are
+    // shown to 1 decimal, and lbs input is rounded to 2 decimals of kg
+    // (matching the column's NUMERIC(7,2)) before saving.
+    const LBS_PER_KG = 2.20462;
+    function kgToUnitNum(kg, unit) {
+      const n = parseFloat(kg);
+      if (!Number.isFinite(n)) return NaN;
+      return (unit || weightUnit) === 'lbs' ? Math.round(n * LBS_PER_KG * 10) / 10 : n;
+    }
+    function unitToKg(n) {
+      return weightUnit === 'lbs' ? Math.round((n / LBS_PER_KG) * 100) / 100 : n;
+    }
     function fmtW(w) {
-      const n = parseFloat(w);
+      const n = kgToUnitNum(w);
       return Number.isFinite(n) ? String(n) : String(w);
     }
     function fmtDur(s) {
@@ -183,7 +196,7 @@
     }
     function fmtSet(s) {
       const side = s.side === 'left' ? 'L ' : s.side === 'right' ? 'R ' : '';
-      if (s.set_type === 'reps') return side + s.reps + ' × ' + fmtW(s.weight);
+      if (s.set_type === 'reps') return side + s.reps + ' × ' + fmtW(s.weight) + ' ' + weightUnit;
       return side + fmtDur(s.duration_seconds) + (s.effort ? ' · ' + s.effort : '');
     }
     // One-line summary of a set list where drop sets chain onto their parent:
@@ -224,6 +237,11 @@
       </div>`;
     }
 
+    function unitSwitcherHtml() {
+      const opt = (u) => `<button type="button" data-action="set-unit" data-unit="${u}" title="Show weights in ${u}" aria-pressed="${weightUnit === u}" class="px-2 py-1 text-xs leading-none transition-colors ${weightUnit === u ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${u}</button>`;
+      return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">${opt('kg')}${opt('lbs')}</div>`;
+    }
+
     function homeHtml() {
       const visible = sessions.filter((s) => !isPendingDelete('session', s.id));
       const rows = visible.length ? visible.map((s) => `
@@ -243,7 +261,7 @@
       return `
         <header class="flex items-center justify-between gap-2 py-5">
           <h1 class="text-2xl font-bold">🏋️ Gym Tracker</h1>
-          ${themeSwitcherHtml()}
+          <div class="flex items-center gap-2">${unitSwitcherHtml()}${themeSwitcherHtml()}</div>
         </header>
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
         <div class="space-y-2">${rows}</div>
@@ -260,7 +278,10 @@
       const fields = d.type === 'reps'
         ? `<div class="flex gap-2 mt-2">
              <input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">
-             <input name="weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(d.weight)}" placeholder="weight" class="${inp} w-1/2 min-w-0">
+             <div class="relative w-1/2 min-w-0">
+               <input name="weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(d.weight)}" placeholder="weight (${weightUnit})" class="${inp} w-full pr-9">
+               <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
+             </div>
            </div>`
         : `<div class="flex gap-2 mt-2">
              <input name="duration" value="${esc(d.duration)}" placeholder="mm:ss or sec" autocomplete="off" class="${inp} w-1/2 min-w-0">
@@ -378,10 +399,11 @@
       return `
         <header class="flex items-center gap-2 py-4">
           <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
-          <div class="ml-1">
+          <div class="ml-1 flex-1 min-w-0">
             <div class="font-semibold">${fmtDate(session.started_at)}</div>
             <div class="text-xs text-zinc-500">Workout session</div>
           </div>
+          ${unitSwitcherHtml()}
         </header>
         ${sNote}
         <div>${cards}</div>
@@ -534,9 +556,11 @@
       '  Shape 1 — "type": "reps"  (rep-based work):',
       '    "reps"    REQUIRED integer, 1 to 9999.',
       '    "weight"  REQUIRED number, 0 to 99999 (kept to 2 decimal places).',
-      '              Unit-agnostic: there is NO kg/lb field and NO conversion — the',
-      '              number is displayed exactly as stored, so carry the source\'s',
-      '              number through unchanged. Use 0 for bodyweight sets.',
+      '              Weights are stored in KILOGRAMS: if the source data is in',
+      '              pounds, convert to kg (divide by 2.20462, round to 2 decimals);',
+      '              if it is already kg, carry the number through unchanged. The',
+      '              app converts to the user\'s display unit (kg or lbs) at render',
+      '              time. Use 0 for bodyweight sets.',
       '  Shape 2 — "type": "time"  (timed holds / cardio):',
       '    "duration_seconds"  REQUIRED integer, 1 to 86400 (whole seconds; convert',
       '                        mm:ss or minutes to seconds).',
@@ -639,11 +663,15 @@
     function findEntryLocal(id) {
       return session.entries.find((e) => e.id === id);
     }
+    // draft.weight is in the display unit; draft.weightKg keeps the exact
+    // stored kg so an untouched field saves back the same value instead of
+    // drifting through a lbs round-trip.
     function draftFromSet(st) {
       return {
         type: st.set_type,
         reps: st.reps ?? '',
         weight: st.weight != null ? fmtW(st.weight) : '',
+        weightKg: st.weight != null ? parseFloat(st.weight) : null,
         duration: st.duration_seconds != null ? fmtDur(st.duration_seconds) : '',
         effort: st.effort || '',
         side: st.side || '',
@@ -658,12 +686,18 @@
       // Side carries over (log left, flip one toggle to log right); note and
       // the drop flag always start fresh.
       if (src) { const d = draftFromSet(src); d.note = ''; d.drop = false; return d; }
-      return { type: 'reps', reps: '', weight: '', duration: '', effort: '', side: '', drop: false, note: '' };
+      return { type: 'reps', reps: '', weight: '', weightKg: null, duration: '', effort: '', side: '', drop: false, note: '' };
     }
     function readDraft(form) {
       const g = (n) => { const i = form.querySelector('[name="' + n + '"]'); return i ? i.value : ''; };
       const dropEl = form.querySelector('[name="drop"]');
-      return { type: openForm.draft.type, side: openForm.draft.side || '', reps: g('reps'), weight: g('weight'), duration: g('duration'), effort: g('effort'), drop: dropEl ? dropEl.checked : !!openForm.draft.drop, note: g('note') };
+      return { type: openForm.draft.type, side: openForm.draft.side || '', reps: g('reps'), weight: g('weight'), weightKg: openForm.draft.weightKg ?? null, duration: g('duration'), effort: g('effort'), drop: dropEl ? dropEl.checked : !!openForm.draft.drop, note: g('note') };
+    }
+    // The kg value to save: if the field still shows the untouched original,
+    // keep the exact stored kg; otherwise convert what was typed.
+    function draftWeightKg(d) {
+      const n = Number(d.weight);
+      return d.weightKg != null && n === kgToUnitNum(d.weightKg) ? d.weightKg : unitToKg(n);
     }
 
     async function onSetSubmit(e) {
@@ -676,7 +710,7 @@
         if (d.reps.trim() === '') { openForm.error = 'Enter reps'; return render(); }
         if (d.weight.trim() === '') { openForm.error = 'Enter weight (0 for bodyweight)'; return render(); }
         body.reps = Number(d.reps);
-        body.weight = Number(d.weight);
+        body.weight = draftWeightKg(d);
       } else {
         const dur = parseDur(d.duration);
         if (!Number.isInteger(dur) || dur < 1) { openForm.error = 'Enter duration as seconds or mm:ss'; return render(); }
@@ -690,7 +724,7 @@
         } else {
           await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
           stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
-          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, note: '', drop: false }, error: '' };
+          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, weightKg: body.weight ?? null, note: '', drop: false }, error: '' };
         }
         await refreshSession();
       } catch (err) {
@@ -1067,6 +1101,26 @@
           applyTheme();
           render();
           break;
+        case 'set-unit': {
+          const u = el.dataset.unit;
+          if (u === weightUnit) break;
+          // An open set form holds a weight in the old unit — re-express it
+          // in the new one (via the exact kg when the field is untouched).
+          const form = document.getElementById('set-form');
+          if (form && openForm) {
+            const d = readDraft(form);
+            const n = Number(d.weight);
+            if (d.type === 'reps' && d.weight.trim() !== '' && Number.isFinite(n)) {
+              d.weightKg = draftWeightKg(d);
+              d.weight = String(kgToUnitNum(d.weightKg, u));
+            }
+            openForm.draft = d;
+          }
+          weightUnit = u;
+          render();
+          api('PATCH', '/api/settings', { weight_unit: u }).catch((err) => toast(err.message));
+          break;
+        }
         case 'undo-delete':
           undoPendingDelete();
           break;
@@ -1080,7 +1134,12 @@
     // proposal checks exercise it, since tests can only navigate routes).
     if (params.get('import') === '1') importSheet = { text: '', error: '', busy: false, specCopied: false };
 
-    loadHome().catch((err) => toast(err.message));
+    // The unit preference must be known before the first weights render.
+    (async () => {
+      try { weightUnit = (await api('GET', '/api/settings')).weight_unit === 'lbs' ? 'lbs' : 'kg'; }
+      catch (_) {} // default to kg — never block the app on the setting
+      await loadHome();
+    })().catch((err) => toast(err.message));
   </script>
 </body>
 </html>

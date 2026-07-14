@@ -593,6 +593,32 @@ app.post('/api/import', wrap(async (req, res) => {
   res.json({ imported, skipped });
 }));
 
+// ---------- Settings ----------
+
+// Weights are always STORED in kg; weight_unit only controls how the client
+// displays them (and which unit its weight inputs accept).
+app.get('/api/settings', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const { rows } = await pool.query(
+    'SELECT weight_unit FROM user_settings WHERE user_id = $1',
+    [uid]
+  );
+  res.json({ weight_unit: rows[0] ? rows[0].weight_unit : 'kg' });
+}));
+
+app.patch('/api/settings', wrap(async (req, res) => {
+  const unit = req.body && req.body.weight_unit;
+  if (unit !== 'kg' && unit !== 'lbs') {
+    return res.status(400).json({ error: 'weight_unit must be "kg" or "lbs"' });
+  }
+  await pool.query(
+    `INSERT INTO user_settings (user_id, weight_unit) VALUES ($1, $2)
+     ON CONFLICT (user_id) DO UPDATE SET weight_unit = EXCLUDED.weight_unit`,
+    [req.user.id, unit]
+  );
+  res.json({ weight_unit: unit });
+}));
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // HTML shell: serve the app if authenticated. Unauthenticated top-level
@@ -682,9 +708,16 @@ async function migrate() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS sets_entry_idx ON sets (session_exercise_id)
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id INTEGER PRIMARY KEY,
+      weight_unit TEXT NOT NULL DEFAULT 'kg' CHECK (weight_unit IN ('kg', 'lbs'))
+    )
+  `);
   // Every row is per-user workout content the UI gates to its owner, so the
   // whole chain is private (staging gets schema only, no prod rows).
   await pool.query(`COMMENT ON TABLE exercises IS 'staging:private'`);
+  await pool.query(`COMMENT ON TABLE user_settings IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE workout_sessions IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE session_exercises IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE sets IS 'staging:private'`);
@@ -730,6 +763,10 @@ async function seedStagingDemo() {
       (900008, 900005, 'reps', 10, 20,  NULL, NULL,      'left',  FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '20 minutes'),
       (900009, 900005, 'reps', 10, 20,  NULL, NULL,      'right', FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '22 minutes')
     ON CONFLICT (id) DO NOTHING
+  `);
+  await pool.query(`
+    INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
+    ON CONFLICT (user_id) DO NOTHING
   `);
 }
 
