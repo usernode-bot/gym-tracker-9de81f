@@ -340,6 +340,10 @@
             <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400">Paste JSON (a Gym Tracker export, or your conversion script's output in the same format), or choose a .json file. Workouts whose start time already exists are skipped, so re-importing is safe.</p>
+          <div class="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+            <span>Converting from another app? Give an AI your data plus</span>
+            <button data-action="copy-format-spec" class="shrink-0 px-2 py-1 rounded-lg border ${importSheet.specCopied ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-zinc-300 dark:border-zinc-600 text-zinc-600 dark:text-zinc-300 hover:border-zinc-400 dark:hover:border-zinc-500'} font-medium">${importSheet.specCopied ? 'Copied ✓' : 'Copy format spec'}</button>
+          </div>
           <input type="file" id="import-file" accept=".json,application/json" class="text-xs text-zinc-500 dark:text-zinc-400">
           <textarea id="import-text" rows="8" spellcheck="false" placeholder='{ "sessions": [ { "started_at": "2024-05-03T18:30:00Z", "exercises": [ … ] } ] }' class="${inp} w-full font-mono text-xs" style="min-height:8rem"></textarea>
           ${importSheet.error ? `<div class="text-red-600 dark:text-red-400 text-xs">${esc(importSheet.error)}</div>` : ''}
@@ -482,6 +486,137 @@
     }
 
     // ---------- import / export ----------
+
+    // Handed to an AI (or a human) along with data from another app so it can
+    // be transformed into our import format. Keep in sync with the server's
+    // parseImportPayload / buildSetValues validation rules.
+    const IMPORT_FORMAT_SPEC = [
+      'GYM TRACKER — IMPORT FORMAT SPECIFICATION ("gym-tracker-export", version 1)',
+      '',
+      'Task: convert workout history from any other format into the JSON described',
+      'below. The result is pasted into the app\'s "Import JSON" sheet (or uploaded',
+      'as a .json file), so output ONLY the JSON document — valid, UTF-8, no',
+      'comments, no trailing commas, no markdown fences.',
+      '',
+      'TOP LEVEL — either of these two forms:',
+      '  { "format": "gym-tracker-export", "version": 1, "sessions": [ <Session>, ... ] }',
+      '  [ <Session>, ... ]            (a bare array of sessions is also accepted)',
+      '"format", "version", and "exported_at" are optional and ignored on import;',
+      'only "sessions" matters. Unknown/extra keys anywhere are ignored.',
+      'Limits: at most 1000 sessions and 20000 total sets per file.',
+      '',
+      'SESSION object — one workout:',
+      '  "started_at"  REQUIRED string. Any date string JavaScript\'s new Date()',
+      '                parses; strongly prefer ISO 8601 with an explicit timezone,',
+      '                e.g. "2024-05-03T18:30:00Z" or "2024-05-03T18:30:00+02:00".',
+      '                This is the session\'s identity: a session whose started_at',
+      '                resolves to the exact same instant (millisecond-exact) as one',
+      '                already stored is SKIPPED, which makes re-imports safe. So:',
+      '                keep timestamps stable across conversions, never give two',
+      '                sessions in one file the same instant, and if the source only',
+      '                has a date (no time), pick a consistent convention like',
+      '                "T12:00:00Z".',
+      '  "note"        optional string or null. Freeform; trimmed, max 500 chars kept.',
+      '  "exercises"   optional array of Exercise (default []). Order is preserved.',
+      '',
+      'EXERCISE object — one exercise performed in the session:',
+      '  "name"  REQUIRED non-empty string, max 120 chars (leading/trailing whitespace',
+      '          trimmed, internal runs of whitespace collapsed to single spaces).',
+      '          Matched case-insensitively against the user\'s existing exercises and',
+      '          created on demand — "Bench Press" and "bench press" are the same',
+      '          exercise. Use one consistent spelling per movement so history links up.',
+      '  "note"  optional string or null, max 500 chars. Put qualifiers like assisted',
+      '          reps or band assistance here — there are no dedicated fields for them.',
+      '  "sets"  optional array of Set (default []). Order is preserved and meaningful',
+      '          (see "drop" below).',
+      '',
+      'SET object — exactly one of two shapes, chosen by "type" (alias "set_type"):',
+      '  Shape 1 — "type": "reps"  (rep-based work):',
+      '    "reps"    REQUIRED integer, 1 to 9999.',
+      '    "weight"  REQUIRED number, 0 to 99999 (kept to 2 decimal places).',
+      '              Unit-agnostic: there is NO kg/lb field and NO conversion — the',
+      '              number is displayed exactly as stored, so carry the source\'s',
+      '              number through unchanged. Use 0 for bodyweight sets.',
+      '  Shape 2 — "type": "time"  (timed holds / cardio):',
+      '    "duration_seconds"  REQUIRED integer, 1 to 86400 (whole seconds; convert',
+      '                        mm:ss or minutes to seconds).',
+      '    "effort"            optional string or null, max 120 chars — freeform,',
+      '                        e.g. "hard", "level 12", "5 km".',
+      '  Omit the other shape\'s fields (they are ignored and stored as null).',
+      '  Fields valid on BOTH shapes:',
+      '    "side"        optional "left" | "right" | null (any other value is an',
+      '                  error). null/omitted means both sides / untagged. For',
+      '                  "each side" work, emit two sets: one "left", one "right".',
+      '    "drop"        optional boolean (alias "is_drop"), default false. true marks',
+      '                  this set as a drop-set continuation of the set immediately',
+      '                  before it; a run of consecutive drop:true sets after a normal',
+      '                  set displays as one drop chain, so array order matters. The',
+      '                  first set of an exercise should not be drop:true.',
+      '    "note"        optional string or null, max 500 chars.',
+      '    "created_at"  optional date string; defaults to the session\'s started_at.',
+      '                  Only set it if the source has real per-set timestamps.',
+      '',
+      'VALIDATION & BEHAVIOR:',
+      '- The whole file is validated before anything is written: one invalid value',
+      '  rejects the entire import (all-or-nothing, no partial writes). Errors name',
+      '  the offending path, e.g. "sessions[2].exercises[0].sets[1]: reps must be a',
+      '  whole number between 1 and 9999".',
+      '- Import is additive — it never edits or deletes existing data. Already-present',
+      '  sessions (exact started_at match) are skipped, so importing twice is safe.',
+      '',
+      'WORKED EXAMPLE (valid, importable as-is):',
+      '{',
+      '  "format": "gym-tracker-export",',
+      '  "version": 1,',
+      '  "sessions": [',
+      '    {',
+      '      "started_at": "2024-05-03T18:30:00Z",',
+      '      "note": "Push day",',
+      '      "exercises": [',
+      '        {',
+      '          "name": "Bench Press",',
+      '          "sets": [',
+      '            { "type": "reps", "reps": 10, "weight": 60 },',
+      '            { "type": "reps", "reps": 8, "weight": 70, "note": "spotter on last rep" },',
+      '            { "type": "reps", "reps": 8, "weight": 50, "drop": true }',
+      '          ]',
+      '        },',
+      '        {',
+      '          "name": "Single-arm Row",',
+      '          "note": "3s pause at the top",',
+      '          "sets": [',
+      '            { "type": "reps", "reps": 12, "weight": 24, "side": "left" },',
+      '            { "type": "reps", "reps": 12, "weight": 24, "side": "right" }',
+      '          ]',
+      '        },',
+      '        {',
+      '          "name": "Plank",',
+      '          "sets": [ { "type": "time", "duration_seconds": 90, "effort": "hard" } ]',
+      '        }',
+      '      ]',
+      '    }',
+      '  ]',
+      '}',
+    ].join('\n');
+
+    async function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try { await navigator.clipboard.writeText(text); return; } catch (_) { /* fall through */ }
+      }
+      // Fallback for iframes / older WebViews without clipboard permission.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+      if (!ok) throw new Error('Couldn’t copy — clipboard unavailable in this browser');
+    }
+
     async function exportJson() {
       // Can't use api(): the response is a file, not JSON to consume.
       const res = await fetch('/api/export' + (demo ? '?demo=1' : ''), { headers: authHeaders });
@@ -882,9 +1017,20 @@
           render();
           break;
         case 'import-json':
-          importSheet = { text: '', error: '', busy: false };
+          importSheet = { text: '', error: '', busy: false, specCopied: false };
           render();
           break;
+        case 'copy-format-spec': {
+          await copyText(IMPORT_FORMAT_SPEC);
+          if (importSheet) {
+            importSheet.specCopied = true;
+            render();
+            setTimeout(() => {
+              if (importSheet && importSheet.specCopied) { importSheet.specCopied = false; render(); }
+            }, 2000);
+          }
+          break;
+        }
         case 'close-import':
           importSheet = null;
           render();
@@ -929,6 +1075,10 @@
           break;
       }
     }
+
+    // ?import=1 deep-links straight to the import sheet (also lets the
+    // proposal checks exercise it, since tests can only navigate routes).
+    if (params.get('import') === '1') importSheet = { text: '', error: '', busy: false, specCopied: false };
 
     loadHome().catch((err) => toast(err.message));
   </script>

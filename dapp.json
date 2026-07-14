@@ -10,6 +10,7 @@
     { "name": "Desktop keeps X delete buttons", "path": "/?demo=1", "expectSelector": ".x-delete" },
     { "name": "Workout note snippet on home card", "path": "/?demo=1", "expectText": "Staging demo workout note" },
     { "name": "Import/export footer renders", "path": "/?demo=1", "expectText": "Export JSON" },
-    { "name": "Import button renders", "path": "/", "expectSelector": "[data-action=\"import-json\"]" }
+    { "name": "Import button renders", "path": "/", "expectSelector": "[data-action=\"import-json\"]" },
+    { "name": "Import sheet opens with Copy format spec button", "path": "/?import=1", "expectSelector": "[data-action=\"copy-format-spec\"]" }
   ]
 }
