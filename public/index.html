@@ -121,6 +121,10 @@
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
+    let progressHub = null;   // { query, list } — Progress hub exercise list
+    let exerciseView = null;  // { data, metric, from } — per-exercise chart screen
+    let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
+    let muscleEditor = null;  // { selected } while the muscle tag-edit sheet is open
     let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
@@ -229,6 +233,11 @@
     // ---------- rendering ----------
     const inp = 'bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-violet-500';
 
+    // ---------- progress / muscle constants ----------
+    const MUSCLE_LABELS = { chest: 'Chest', back: 'Back', shoulders: 'Shoulders', biceps: 'Biceps', triceps: 'Triceps', quads: 'Quads', hamstrings: 'Hamstrings', glutes: 'Glutes', calves: 'Calves', core: 'Core', forearms: 'Forearms' };
+    const MUSCLE_SLUGS = Object.keys(MUSCLE_LABELS);
+    const METRIC_LABELS = { maxw: 'Max weight', vol: 'Volume', e1rm: 'Est. 1RM', maxdur: 'Longest set', totaldur: 'Total time', sets: 'Sets' };
+
     function themeSwitcherHtml() {
       const pref = getThemePref();
       const opt = (t, label, icon) => `<button type="button" data-action="set-theme" data-theme="${t}" title="${label}" aria-label="${label}" aria-pressed="${pref === t}" class="px-2 py-1 text-sm leading-none transition-colors ${pref === t ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${icon}</button>`;
@@ -263,7 +272,8 @@
           <h1 class="text-2xl font-bold">🏋️ Gym Tracker</h1>
           <div class="flex items-center gap-2">${unitSwitcherHtml()}${themeSwitcherHtml()}</div>
         </header>
-        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-5">+ Start workout</button>
+        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
+        <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
         <div class="space-y-2">${rows}</div>
         <div class="flex justify-center gap-6 mt-6">
           <button data-action="export-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
@@ -342,7 +352,7 @@
         <div class="absolute inset-0 rounded-xl bg-red-500 dark:bg-red-600 flex items-center justify-end pr-5 text-white text-xl opacity-0" aria-hidden="true">🗑</div>
         <div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
           <div class="flex items-center justify-between gap-2">
-            <div class="font-semibold">${esc(en.name)}</div>
+            <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 truncate hover:text-violet-700 dark:hover:text-violet-300">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
             <button data-action="delete-entry" data-entry="${en.id}" class="x-delete text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
           </div>
           ${noteHtml}
@@ -428,8 +438,328 @@
       box.innerHTML = html;
     }
 
+    // ---------- progress views ----------
+
+    // One clickable muscle region: shapes inherit the group's fill so hover /
+    // theming lives in one class list. <g> works with the delegated click
+    // handler (closest()/dataset work on SVG elements).
+    function bodyRegion(slug, shapes) {
+      return `<g data-action="open-muscle-chart" data-muscle="${slug}" class="cursor-pointer fill-zinc-400 dark:fill-zinc-600 hover:fill-violet-500 dark:hover:fill-violet-500 transition-colors"><title>${MUSCLE_LABELS[slug]}</title>${shapes}</g>`;
+    }
+
+    // Schematic front/back figure — neutral filler (head, hands, joints)
+    // underneath, tappable muscle regions on top.
+    function figureSvg(side) {
+      const filler = `<g class="fill-zinc-200 dark:fill-zinc-800" pointer-events="none">
+        <circle cx="100" cy="26" r="15"/>
+        <rect x="92" y="38" width="16" height="16" rx="5"/>
+        <rect x="70" y="54" width="60" height="102" rx="12"/>
+        <rect x="45" y="58" width="19" height="106" rx="9"/>
+        <rect x="136" y="58" width="19" height="106" rx="9"/>
+        <circle cx="54" cy="172" r="7"/><circle cx="146" cy="172" r="7"/>
+        <rect x="72" y="150" width="56" height="20" rx="9"/>
+        <rect x="74" y="164" width="23" height="132" rx="10"/>
+        <rect x="103" y="164" width="23" height="132" rx="10"/>
+        <rect x="68" y="294" width="28" height="11" rx="5"/><rect x="104" y="294" width="28" height="11" rx="5"/>
+      </g>`;
+      const both =
+        bodyRegion('shoulders', '<ellipse cx="62" cy="63" rx="15" ry="10"/><ellipse cx="138" cy="63" rx="15" ry="10"/>') +
+        bodyRegion('forearms', '<rect x="47" y="124" width="15" height="38" rx="7"/><rect x="138" y="124" width="15" height="38" rx="7"/>') +
+        bodyRegion('calves', '<rect x="78" y="240" width="17" height="50" rx="8"/><rect x="105" y="240" width="17" height="50" rx="8"/>');
+      const front =
+        bodyRegion('chest', '<rect x="74" y="57" width="52" height="34" rx="10"/>') +
+        bodyRegion('core', '<rect x="78" y="95" width="44" height="54" rx="8"/>') +
+        bodyRegion('biceps', '<rect x="46" y="78" width="17" height="42" rx="8"/><rect x="137" y="78" width="17" height="42" rx="8"/>') +
+        bodyRegion('quads', '<rect x="76" y="166" width="19" height="66" rx="8"/><rect x="105" y="166" width="19" height="66" rx="8"/>');
+      const back =
+        bodyRegion('back', '<rect x="74" y="57" width="52" height="62" rx="10"/>') +
+        bodyRegion('glutes', '<rect x="75" y="123" width="50" height="42" rx="12"/>') +
+        bodyRegion('triceps', '<rect x="46" y="78" width="17" height="42" rx="8"/><rect x="137" y="78" width="17" height="42" rx="8"/>') +
+        bodyRegion('hamstrings', '<rect x="76" y="166" width="19" height="66" rx="8"/><rect x="105" y="166" width="19" height="66" rx="8"/>');
+      const label = `<text x="100" y="312" text-anchor="middle" font-size="11" class="fill-zinc-400 dark:fill-zinc-600">${side === 'front' ? 'Front' : 'Back'}</text>`;
+      return filler + both + (side === 'front' ? front : back) + label;
+    }
+
+    function bodyDiagramHtml() {
+      // The chip row is the accessible/keyboard path — SVG paths aren't focusable.
+      const chips = MUSCLE_SLUGS.map((m) => `<button data-action="open-muscle-chart" data-muscle="${m}" class="px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-400">${MUSCLE_LABELS[m]}</button>`).join('');
+      return `<div data-body-diagram class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
+        <div class="flex justify-center gap-3">
+          <svg viewBox="0 0 200 316" class="w-1/2 max-w-[170px]" aria-hidden="true">${figureSvg('front')}</svg>
+          <svg viewBox="0 0 200 316" class="w-1/2 max-w-[170px]" aria-hidden="true">${figureSvg('back')}</svg>
+        </div>
+        <div class="flex flex-wrap justify-center gap-1.5 mt-3">${chips}</div>
+      </div>`;
+    }
+
+    function progressHtml() {
+      return `
+        <header class="flex items-center gap-2 py-4">
+          <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
+          <div class="ml-1 flex-1 min-w-0">
+            <div class="font-semibold">📈 Progress</div>
+            <div class="text-xs text-zinc-500">Tap a muscle, or pick an exercise</div>
+          </div>
+          ${unitSwitcherHtml()}
+        </header>
+        ${bodyDiagramHtml()}
+        <div class="mt-5 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">By exercise</div>
+        <input id="progress-search" placeholder="Search exercises…" autocomplete="off" class="${inp} w-full mb-2">
+        <div id="progress-list" class="space-y-0.5 pb-6"></div>`;
+    }
+
+    function renderProgressList() {
+      const box = document.getElementById('progress-list');
+      if (!box || !progressHub) return;
+      const ql = progressHub.query.trim().toLowerCase();
+      const items = progressHub.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
+      box.innerHTML = items.length ? items.map((x) => {
+        const tags = (x.muscles && x.muscles.length)
+          ? x.muscles.map((m) => `<span class="px-1.5 py-0.5 rounded-full bg-zinc-200/70 dark:bg-zinc-800 text-[10px] text-zinc-600 dark:text-zinc-400">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
+          : '<span class="text-[10px] italic text-zinc-400 dark:text-zinc-600">untagged</span>';
+        return `<button data-action="open-exercise-chart" data-id="${x.id}" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">
+          <div class="text-sm font-medium">${esc(x.name)}</div>
+          <div class="flex flex-wrap gap-1 mt-1">${tags}</div>
+        </button>`;
+      }).join('') : '<div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">No exercises yet</div>';
+    }
+
+    // ---------- chart metrics ----------
+
+    function exerciseMetrics(d) {
+      const hasReps = d.sessions.some((s) => s.sets.some((x) => x.set_type === 'reps'));
+      const hasTime = d.sessions.some((s) => s.sets.some((x) => x.set_type === 'time'));
+      return [...(hasReps ? ['maxw', 'vol', 'e1rm'] : []), ...(hasTime ? ['maxdur', 'totaldur'] : [])];
+    }
+
+    // One session's value for a metric, in kg / seconds; null when the
+    // session has no sets of that metric's shape (the point is omitted).
+    function sessionMetricValue(sets, metric) {
+      if (metric === 'maxdur' || metric === 'totaldur') {
+        const ts = sets.filter((s) => s.set_type === 'time');
+        if (!ts.length) return null;
+        return metric === 'maxdur'
+          ? Math.max(...ts.map((s) => s.duration_seconds || 0))
+          : ts.reduce((a, s) => a + (s.duration_seconds || 0), 0);
+      }
+      const rs = sets.filter((s) => s.set_type === 'reps');
+      if (!rs.length) return null;
+      if (metric === 'maxw') return Math.max(...rs.map((s) => parseFloat(s.weight) || 0));
+      if (metric === 'vol') return rs.reduce((a, s) => a + (s.reps || 0) * (parseFloat(s.weight) || 0), 0);
+      // e1rm (Epley) from weighted sets only; all-bodyweight sessions chart as 0
+      const ws = rs.filter((s) => (parseFloat(s.weight) || 0) > 0);
+      return ws.length ? Math.max(...ws.map((s) => parseFloat(s.weight) * (1 + (s.reps || 0) / 30))) : 0;
+    }
+
+    function weekStartMs(t) {
+      const d = new Date(t);
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back to Monday
+      return d.getTime();
+    }
+
+    // Continuous Monday-start weekly buckets from the first week with data
+    // through the current week, zero-filled so slack weeks stay visible.
+    function muscleWeeks(data) {
+      if (!data.sessions.length) return [];
+      const byWeek = new Map();
+      for (const s of data.sessions) {
+        const w = weekStartMs(new Date(s.started_at).getTime());
+        const b = byWeek.get(w) || { vol: 0, sets: 0 };
+        for (const st of s.sets) {
+          b.sets++;
+          if (st.set_type === 'reps') b.vol += (st.reps || 0) * (parseFloat(st.weight) || 0);
+        }
+        byWeek.set(w, b);
+      }
+      const last = weekStartMs(Date.now());
+      const out = [];
+      const cur = new Date(Math.min(...byWeek.keys()));
+      while (cur.getTime() <= last && out.length < 1040) {
+        const b = byWeek.get(cur.getTime()) || { vol: 0, sets: 0 };
+        out.push({ t: cur.getTime(), vol: b.vol, sets: b.sets });
+        cur.setDate(cur.getDate() + 7);
+      }
+      return out;
+    }
+
+    // Axis/gridline label for a metric value (kg → display unit for weights).
+    function fmtMetricVal(metric, v) {
+      if (metric === 'maxdur' || metric === 'totaldur') return fmtDur(Math.round(v));
+      if (metric === 'sets') return String(Math.round(v * 10) / 10);
+      const n = weightUnit === 'lbs' ? v * LBS_PER_KG : v;
+      return String(Math.round(n * 10) / 10);
+    }
+
+    function niceCeil(v) {
+      const pow = Math.pow(10, Math.floor(Math.log10(v)));
+      for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+        if (m * pow >= v - 1e-9) return m * pow;
+      }
+      return 10 * pow;
+    }
+
+    function metricToggleHtml(metrics, active) {
+      return `<div class="flex flex-wrap gap-1.5 mb-2">${metrics.map((m) => `<button data-action="chart-metric" data-metric="${m}" class="px-2.5 py-1 rounded-lg text-xs transition-colors ${active === m ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${METRIC_LABELS[m]}</button>`).join('')}</div>`;
+    }
+
+    // Hand-rolled SVG line chart: true time scale on X, 0→nice-max on Y.
+    function chartSvgHtml(points, fmtY) {
+      if (!points.length) return '<div data-chart class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-8">No data for this metric.</div>';
+      const W = 400, H = 200, L = 48, R = 14, T = 14, B = 26;
+      const maxV = Math.max(...points.map((p) => p.v));
+      const top = niceCeil(maxV <= 0 ? 10 : maxV * 1.05);
+      const minT = points[0].t, maxT = points[points.length - 1].t;
+      const x = (t) => maxT === minT ? L + (W - L - R) / 2 : L + (t - minT) / (maxT - minT) * (W - L - R);
+      const y = (v) => T + (1 - v / top) * (H - T - B);
+      let grid = '';
+      for (let i = 0; i <= 4; i++) {
+        const v = top * i / 4, yy = y(v);
+        grid += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke-width="1" class="stroke-zinc-200 dark:stroke-zinc-800"/>` +
+          `<text x="${L - 6}" y="${yy + 3.5}" text-anchor="end" font-size="10" class="fill-zinc-400 dark:fill-zinc-500">${esc(fmtY(v))}</text>`;
+      }
+      const idxs = [...new Set(points.length < 3 ? [0, points.length - 1] : [0, Math.floor((points.length - 1) / 2), points.length - 1])];
+      const xlab = idxs.map((i) => `<text x="${x(points[i].t).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" class="fill-zinc-400 dark:fill-zinc-500">${esc(fmtDateShort(points[i].t))}</text>`).join('');
+      const pts = points.map((p) => x(p.t).toFixed(1) + ',' + y(p.v).toFixed(1)).join(' ');
+      const line = points.length > 1 ? `<polyline points="${pts}" fill="none" stroke="#7c3aed" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '';
+      const dots = points.map((p) => `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.2" fill="#7c3aed"/>`).join('');
+      return `<div data-chart class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-2"><svg viewBox="0 0 ${W} ${H}" class="w-full">${grid}${line}${dots}${xlab}</svg></div>`;
+    }
+
+    function muscleEditorHtml() {
+      const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
+      return `<div data-action="close-muscle-editor" class="fixed inset-0 bg-black/60 z-20">
+        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="font-semibold">Muscle groups</div>
+            <button data-action="close-muscle-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+          </div>
+          <div class="flex flex-wrap gap-1.5">${MUSCLE_SLUGS.map(chip).join('')}</div>
+          <button data-action="save-muscles" class="w-full mt-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Save</button>
+        </div>
+      </div>`;
+    }
+
+    function exerciseChartHtml() {
+      const d = exerciseView.data;
+      const metric = exerciseView.metric;
+      const metrics = exerciseMetrics(d);
+      const tagChips = (d.muscles || []).length
+        ? d.muscles.map((m) => `<span class="px-2 py-0.5 rounded-full bg-violet-600/10 text-violet-700 dark:text-violet-300 text-xs">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
+        : '<span class="text-xs italic text-zinc-400 dark:text-zinc-600">no muscle tags</span>';
+      const editBtn = demo ? '' : '<button data-action="edit-muscles" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-1 shrink-0">Edit tags</button>';
+      let body;
+      if (!d.sessions.length) {
+        body = '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No sets logged yet — its history will appear here.</div>';
+      } else {
+        const points = d.sessions
+          .map((s) => ({ t: new Date(s.started_at).getTime(), v: sessionMetricValue(s.sets, metric) }))
+          .filter((p) => p.v !== null);
+        const wm = metric === 'maxw' || metric === 'vol' || metric === 'e1rm';
+        const hist = [...d.sessions].reverse().map((s) => `
+          <button data-action="open-session" data-id="${s.session_id}" class="w-full text-left px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60">
+            <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
+            <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
+          </button>`).join('');
+        body = `
+          ${metrics.length > 1 ? metricToggleHtml(metrics, metric) : ''}
+          <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${METRIC_LABELS[metric]}${wm ? ' · ' + weightUnit : ''}</div>
+          ${chartSvgHtml(points, (v) => fmtMetricVal(metric, v))}
+          <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">History</div>
+          <div class="space-y-1.5 pb-6">${hist}</div>`;
+      }
+      return `
+        <header class="flex items-center gap-2 py-4">
+          <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
+          <div class="ml-1 flex-1 min-w-0">
+            <div class="font-semibold truncate">${esc(d.name)}</div>
+            <div class="text-xs text-zinc-500">${d.sessions.length} workout${d.sessions.length === 1 ? '' : 's'}</div>
+          </div>
+          ${unitSwitcherHtml()}
+        </header>
+        <div class="flex items-center gap-1.5 flex-wrap mb-3">${tagChips}${editBtn}</div>
+        ${body}
+        ${muscleEditor ? muscleEditorHtml() : ''}`;
+    }
+
+    function muscleChartHtml() {
+      const mv = muscleView;
+      const label = MUSCLE_LABELS[mv.muscle] || esc(mv.muscle);
+      let body;
+      if (!mv.data.exercises.length) {
+        body = `<div class="text-center text-zinc-500 dark:text-zinc-600 py-12 px-4">No exercises are tagged with ${label} yet.<br><span class="text-sm">Open an exercise from the Progress screen and use “Edit tags”.</span></div>`;
+      } else if (!mv.data.sessions.length) {
+        body = `<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No sets logged yet for ${label}-tagged exercises.</div>`;
+      } else {
+        const weeks = muscleWeeks(mv.data);
+        const points = weeks.map((w) => ({ t: w.t, v: mv.metric === 'vol' ? w.vol : w.sets }));
+        const counts = new Map();
+        for (const s of mv.data.sessions) for (const st of s.sets) {
+          counts.set(st.exercise_id, (counts.get(st.exercise_id) || 0) + 1);
+        }
+        const exRows = mv.data.exercises.map((x) => {
+          const n = counts.get(x.id) || 0;
+          return `<button data-action="open-exercise-chart" data-id="${x.id}" class="w-full flex items-baseline justify-between gap-2 text-left px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60">
+            <span class="text-sm font-medium truncate">${esc(x.name)}</span>
+            <span class="text-xs text-zinc-500 shrink-0">${n} set${n === 1 ? '' : 's'}</span>
+          </button>`;
+        }).join('');
+        body = `
+          ${metricToggleHtml(['vol', 'sets'], mv.metric)}
+          <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">Weekly ${mv.metric === 'vol' ? 'volume · ' + weightUnit : 'sets'}</div>
+          ${chartSvgHtml(points, (v) => fmtMetricVal(mv.metric === 'vol' ? 'vol' : 'sets', v))}
+          <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">Exercises</div>
+          <div class="space-y-1.5 pb-6">${exRows}</div>`;
+      }
+      return `
+        <header class="flex items-center gap-2 py-4">
+          <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
+          <div class="ml-1 flex-1 min-w-0">
+            <div class="font-semibold">${label}</div>
+            <div class="text-xs text-zinc-500">Weekly training across tagged exercises</div>
+          </div>
+          ${unitSwitcherHtml()}
+        </header>
+        ${body}`;
+    }
+
+    async function openProgress() {
+      progressHub = { query: '', list: [] };
+      exerciseView = null; muscleView = null; muscleEditor = null;
+      openForm = null; picker = null; importSheet = null;
+      view = 'progress';
+      render();
+      const list = (await api('GET', '/api/exercises')).exercises;
+      if (progressHub) { progressHub.list = list; renderProgressList(); }
+    }
+
+    async function openExerciseChart(id, from) {
+      const data = await api('GET', '/api/exercises/' + id + '/history');
+      const metrics = exerciseMetrics(data);
+      exerciseView = { data, metric: metrics[0] || 'maxw', from: from || 'progress' };
+      muscleView = null; muscleEditor = null;
+      view = 'exercise';
+      render();
+    }
+
+    async function openMuscleChart(slug) {
+      const data = await api('GET', '/api/muscles/' + slug + '/history');
+      const weeks = muscleWeeks(data);
+      // Volume is the default; a muscle trained only with timed/bodyweight
+      // work (all-zero volume) falls back to the Sets metric.
+      muscleView = { muscle: slug, data, metric: weeks.some((w) => w.vol > 0) ? 'vol' : 'sets' };
+      exerciseView = null; muscleEditor = null;
+      view = 'muscle';
+      render();
+    }
+
     function render() {
-      document.getElementById('app').innerHTML = view === 'home' ? homeHtml() : sessionHtml();
+      const html = view === 'home' ? homeHtml()
+        : view === 'session' ? sessionHtml()
+        : view === 'progress' ? progressHtml()
+        : view === 'exercise' ? exerciseChartHtml()
+        : muscleChartHtml();
+      document.getElementById('app').innerHTML = html;
       wireInputs();
       tick();
     }
@@ -504,6 +834,15 @@
         si.addEventListener('input', () => { picker.query = si.value; renderPickerList(); });
         si.focus();
         renderPickerList();
+      }
+      if (view === 'progress' && progressHub) {
+        const ps = document.getElementById('progress-search');
+        if (ps) {
+          // no autofocus — popping the keyboard would hide the body diagram
+          ps.value = progressHub.query;
+          ps.addEventListener('input', () => { progressHub.query = ps.value; renderProgressList(); });
+          renderProgressList();
+        }
       }
     }
 
@@ -950,14 +1289,14 @@
       if (Date.now() < suppressClicksUntil && !el.closest('#undo-toast')) { suppressClicksUntil = 0; return; }
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
-      if ((action === 'close-picker' || action === 'close-import') && e.target !== el) return;
+      if ((action === 'close-picker' || action === 'close-import' || action === 'close-muscle-editor') && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -978,8 +1317,59 @@
           break;
         case 'back-home':
           openForm = null; editingNote = null; editingSessionNote = false; picker = null;
+          progressHub = null; exerciseView = null; muscleView = null; muscleEditor = null;
           await loadHome();
           break;
+        case 'open-progress':
+          await openProgress();
+          break;
+        case 'open-exercise-chart': {
+          // Remember where we came from so Back returns there.
+          const from = view === 'session' && session ? 'session:' + session.id
+            : view === 'muscle' && muscleView ? 'muscle:' + muscleView.muscle
+            : 'progress';
+          await openExerciseChart(+el.dataset.id, from);
+          break;
+        }
+        case 'open-muscle-chart':
+          await openMuscleChart(el.dataset.muscle);
+          break;
+        case 'chart-metric':
+          if (view === 'exercise' && exerciseView) exerciseView.metric = el.dataset.metric;
+          else if (view === 'muscle' && muscleView) muscleView.metric = el.dataset.metric;
+          render();
+          break;
+        case 'chart-back': {
+          if (view === 'muscle') { muscleView = null; await openProgress(); break; }
+          const from = (exerciseView && exerciseView.from) || 'progress';
+          exerciseView = null; muscleEditor = null;
+          if (from.indexOf('session:') === 0) await openSession(+from.slice(8));
+          else if (from.indexOf('muscle:') === 0) await openMuscleChart(from.slice(7));
+          else await openProgress();
+          break;
+        }
+        case 'edit-muscles':
+          muscleEditor = { selected: [...(exerciseView.data.muscles || [])] };
+          render();
+          break;
+        case 'toggle-muscle': {
+          const m = el.dataset.muscle;
+          const i = muscleEditor.selected.indexOf(m);
+          if (i >= 0) muscleEditor.selected.splice(i, 1); else muscleEditor.selected.push(m);
+          render();
+          break;
+        }
+        case 'close-muscle-editor':
+          muscleEditor = null;
+          render();
+          break;
+        case 'save-muscles': {
+          const r = await api('PATCH', '/api/exercises/' + exerciseView.data.id, { muscles: muscleEditor.selected });
+          exerciseView.data.muscles = r.muscles;
+          muscleEditor = null;
+          render();
+          break;
+        }
         case 'open-picker': {
           picker = { query: '', list: [] };
           render();
@@ -1144,6 +1534,19 @@
           if (params.get('picker') === '1') await handle('open-picker', null);
           return;
         } catch (_) {} // unknown/foreign session — fall through to home
+      }
+      // ?progress=1 / ?exercise=<id> / ?muscle=<slug> deep-link into the
+      // Progress area — used by the proposal checks like ?session above.
+      if (params.get('progress') === '1') {
+        try { await openProgress(); return; } catch (_) {}
+      }
+      const deepExercise = parseInt(params.get('exercise') || '', 10);
+      if (deepExercise) {
+        try { await openExerciseChart(deepExercise, 'progress'); return; } catch (_) {}
+      }
+      const deepMuscle = params.get('muscle');
+      if (deepMuscle) {
+        try { await openMuscleChart(deepMuscle); return; } catch (_) {}
       }
       await loadHome();
     })().catch((err) => toast(err.message));

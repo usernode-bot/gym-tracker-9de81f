@@ -70,6 +70,41 @@ function cleanNote(v) {
   return t ? t.slice(0, 500) : null;
 }
 
+// ---------- Muscle groups ----------
+
+// Canonical muscle-group slugs. exercises.muscles is TEXT[] of these;
+// NULL means "never auto-suggested" (pre-feature rows, backfilled at boot),
+// while an array — even empty — means the suggestion ran or the user edited
+// the tags, so it is never overwritten automatically.
+const MUSCLE_SLUGS = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'quads', 'hamstrings', 'glutes', 'calves', 'core', 'forearms'];
+
+// Ordered keyword rules matched against the lowercased exercise name;
+// FIRST matching rule wins (specific before generic — "leg curl" before
+// "curl"). No match → empty suggestion.
+const MUSCLE_RULES = [
+  [/leg curl|hamstring/, ['hamstrings']],
+  [/\brdl\b|romanian|good morning|deadlift/, ['hamstrings', 'glutes', 'back']],
+  [/hip thrust|glute/, ['glutes']],
+  [/leg extension/, ['quads']],
+  [/squat|leg press|lunge|step[ -]?up/, ['quads', 'glutes']],
+  [/calf|calves/, ['calves']],
+  [/bench|chest|\bfl(?:y|ye|ies|yes)\b|push[ -]?up|\bdips?\b/, ['chest', 'triceps']],
+  [/shoulder|\bohp\b|overhead|military|lateral raise|front raise|arnold/, ['shoulders']],
+  [/\brows?\b|rowing|pull[ -]?up|chin[ -]?up|pull[ -]?down|\blats?\b|shrug|face pull/, ['back']],
+  [/tricep|push[ -]?down|skull|close[ -]?grip/, ['triceps']],
+  [/curl/, ['biceps']],
+  [/plank|crunch|sit[ -]?up|\babs?\b|\bcore\b|leg raise|russian/, ['core']],
+  [/wrist|forearm|grip|farmer/, ['forearms']],
+];
+
+function suggestMuscles(name) {
+  const n = String(name || '').toLowerCase();
+  for (const [re, muscles] of MUSCLE_RULES) {
+    if (re.test(n)) return muscles;
+  }
+  return [];
+}
+
 // Merge a set payload over an existing row (null for create) and validate.
 // If set_type flips reps↔time, the new type's fields must be in the patch;
 // the other type's fields are nulled to keep the populated-columns
@@ -275,7 +310,7 @@ app.get('/api/exercises', wrap(async (req, res) => {
   const q = String(req.query.q || '').trim();
   const pattern = '%' + q.replace(/([\\%_])/g, '\\$1') + '%';
   const { rows } = await pool.query(
-    `SELECT e.id, e.name
+    `SELECT e.id, e.name, e.muscles
      FROM exercises e
      LEFT JOIN session_exercises se ON se.exercise_id = e.id
      WHERE e.user_id = $1 AND e.name ILIKE $2
@@ -283,7 +318,7 @@ app.get('/api/exercises', wrap(async (req, res) => {
      ORDER BY GREATEST(e.created_at, COALESCE(MAX(se.created_at), e.created_at)) DESC, e.id DESC`,
     [uid, pattern]
   );
-  res.json({ exercises: rows });
+  res.json({ exercises: rows.map((r) => ({ ...r, muscles: r.muscles || [] })) });
 }));
 
 app.post('/api/exercises', wrap(async (req, res) => {
@@ -291,14 +326,97 @@ app.post('/api/exercises', wrap(async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Exercise name is required' });
   if (name.length > 120) return res.status(400).json({ error: 'Exercise name must be 120 characters or fewer' });
   // Create-or-get: the no-op DO UPDATE makes RETURNING yield the existing
-  // row on a case-insensitive duplicate, keeping its original casing.
+  // row on a case-insensitive duplicate, keeping its original casing (and
+  // its existing muscle tags — the suggestion only lands on a fresh insert).
   const { rows } = await pool.query(
-    `INSERT INTO exercises (user_id, name) VALUES ($1, $2)
+    `INSERT INTO exercises (user_id, name, muscles) VALUES ($1, $2, $3)
      ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
-     RETURNING id, name`,
-    [req.user.id, name]
+     RETURNING id, name, muscles`,
+    [req.user.id, name, suggestMuscles(name)]
   );
-  res.json(rows[0]);
+  res.json({ ...rows[0], muscles: rows[0].muscles || [] });
+}));
+
+app.patch('/api/exercises/:id', wrap(async (req, res) => {
+  const id = idParam(req.params.id);
+  if (!id) return res.status(404).json({ error: 'Exercise not found' });
+  const m = req.body && req.body.muscles;
+  if (!Array.isArray(m) || m.some((x) => !MUSCLE_SLUGS.includes(x))) {
+    return res.status(400).json({ error: 'muscles must be an array of known muscle groups' });
+  }
+  const muscles = [...new Set(m)];
+  const { rows } = await pool.query(
+    'UPDATE exercises SET muscles = $2 WHERE id = $1 AND user_id = $3 RETURNING id, name, muscles',
+    [id, muscles, req.user.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Exercise not found' });
+  res.json({ ...rows[0], muscles: rows[0].muscles || [] });
+}));
+
+// Full per-session set history for one exercise, oldest session first.
+// Raw sets, no aggregates — the client computes chart metrics so kg→display
+// unit conversion stays client-side.
+app.get('/api/exercises/:id/history', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const exId = idParam(req.params.id);
+  if (!exId) return res.status(404).json({ error: 'Exercise not found' });
+  const ex = (await pool.query(
+    'SELECT id, name, muscles FROM exercises WHERE id = $1 AND user_id = $2',
+    [exId, uid]
+  )).rows[0];
+  if (!ex) return res.status(404).json({ error: 'Exercise not found' });
+  const rows = (await pool.query(
+    `SELECT s.id AS session_id, s.started_at, st.set_type, st.reps, st.weight,
+            st.duration_seconds, st.effort, st.side, st.is_drop, st.note
+     FROM sets st
+     JOIN session_exercises se ON se.id = st.session_exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $2 AND se.exercise_id = $1
+     ORDER BY s.started_at, s.id, st.created_at, st.id`,
+    [exId, uid]
+  )).rows;
+  const sessions = [];
+  for (const r of rows) {
+    const last = sessions[sessions.length - 1];
+    const bucket = last && last.session_id === r.session_id
+      ? last
+      : (sessions.push({ session_id: r.session_id, started_at: r.started_at, sets: [] }), sessions[sessions.length - 1]);
+    bucket.sets.push({ set_type: r.set_type, reps: r.reps, weight: r.weight, duration_seconds: r.duration_seconds, effort: r.effort, side: r.side, is_drop: r.is_drop, note: r.note });
+  }
+  res.json({ id: ex.id, name: ex.name, muscles: ex.muscles || [], sessions });
+}));
+
+// Per-session set history across ALL exercises tagged with a muscle group,
+// plus the tagged-exercise list (so the client can tell "nothing tagged"
+// apart from "tagged but no sets yet"). Client buckets into weeks.
+app.get('/api/muscles/:muscle/history', wrap(async (req, res) => {
+  const muscle = String(req.params.muscle || '');
+  if (!MUSCLE_SLUGS.includes(muscle)) return res.status(404).json({ error: 'Muscle not found' });
+  const uid = readUserId(req);
+  const exercises = (await pool.query(
+    'SELECT id, name FROM exercises WHERE user_id = $1 AND $2 = ANY(muscles) ORDER BY lower(name)',
+    [uid, muscle]
+  )).rows;
+  const rows = (await pool.query(
+    `SELECT s.id AS session_id, s.started_at, e.id AS exercise_id, e.name AS exercise_name,
+            st.set_type, st.reps, st.weight, st.duration_seconds, st.effort, st.side, st.is_drop, st.note
+     FROM sets st
+     JOIN session_exercises se ON se.id = st.session_exercise_id
+     JOIN exercises e ON e.id = se.exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $1 AND e.user_id = $1 AND $2 = ANY(e.muscles)
+     ORDER BY s.started_at, s.id, st.created_at, st.id`,
+    [uid, muscle]
+  )).rows;
+  const sessions = [];
+  for (const r of rows) {
+    const last = sessions[sessions.length - 1];
+    const bucket = last && last.session_id === r.session_id
+      ? last
+      : (sessions.push({ session_id: r.session_id, started_at: r.started_at, sets: [] }), sessions[sessions.length - 1]);
+    bucket.sets.push({ exercise_id: r.exercise_id, exercise_name: r.exercise_name, set_type: r.set_type, reps: r.reps, weight: r.weight, duration_seconds: r.duration_seconds, effort: r.effort, side: r.side, is_drop: r.is_drop, note: r.note });
+  }
+  res.json({ muscle, exercises, sessions });
 }));
 
 // ---------- Session exercises (entries) ----------
@@ -560,10 +678,10 @@ app.post('/api/import', wrap(async (req, res) => {
         let exId = exerciseIds.get(nameKey);
         if (!exId) {
           exId = (await client.query(
-            `INSERT INTO exercises (user_id, name) VALUES ($1, $2)
+            `INSERT INTO exercises (user_id, name, muscles) VALUES ($1, $2, $3)
              ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
              RETURNING id`,
-            [req.user.id, en.name]
+            [req.user.id, en.name, suggestMuscles(en.name)]
           )).rows[0].id;
           exerciseIds.set(nameKey, exId);
         }
@@ -661,6 +779,8 @@ async function migrate() {
     CREATE UNIQUE INDEX IF NOT EXISTS exercises_user_lower_name_idx
     ON exercises (user_id, lower(name))
   `);
+  // NULL = never auto-suggested; array (even empty) = suggested/user-edited.
+  await pool.query(`ALTER TABLE exercises ADD COLUMN IF NOT EXISTS muscles TEXT[]`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS workout_sessions (
       id SERIAL PRIMARY KEY,
@@ -723,6 +843,14 @@ async function migrate() {
   await pool.query(`COMMENT ON TABLE workout_sessions IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE session_exercises IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE sets IS 'staging:private'`);
+
+  // One-time muscle-tag backfill for pre-feature rows: only rows still NULL
+  // (never suggested) are touched, so a user who deliberately cleared their
+  // tags (saved as '{}') is never re-suggested.
+  const { rows: untagged } = await pool.query('SELECT id, name FROM exercises WHERE muscles IS NULL');
+  for (const r of untagged) {
+    await pool.query('UPDATE exercises SET muscles = $2 WHERE id = $1 AND muscles IS NULL', [r.id, suggestMuscles(r.name)]);
+  }
 }
 
 // Idempotent staging-only demo data under fake user 900001 — surfaced to
@@ -738,10 +866,31 @@ async function seedStagingDemo() {
       (900004, 900001, 'Staging demo split squat')
     ON CONFLICT (id) DO NOTHING
   `);
+  // Explicit demo muscle tags: on a long-lived staging DB the exercise rows
+  // above already exist (insert skipped) and may predate the muscles column,
+  // so tag them here — idempotently, without clobbering anything non-empty.
+  const demoTags = [
+    [900001, ['chest', 'triceps']],
+    [900002, ['quads', 'glutes']],
+    [900003, ['core']],
+    [900004, ['quads', 'glutes']],
+  ];
+  for (const [id, muscles] of demoTags) {
+    await pool.query(
+      `UPDATE exercises SET muscles = $2 WHERE id = $1 AND user_id = 900001 AND (muscles IS NULL OR muscles = '{}')`,
+      [id, muscles]
+    );
+  }
+  // Sessions 900003–900005 are OLDER history so the progress charts have a
+  // multi-week trend (bench in every session, plank in two) while the
+  // newest-session "Last time" demo behaviour above stays intact.
   await pool.query(`
     INSERT INTO workout_sessions (id, user_id, started_at, note) VALUES
       (900001, 900001, NOW() - INTERVAL '3 days', NULL),
-      (900002, 900001, NOW() - INTERVAL '2 hours', 'Staging demo workout note — deload week')
+      (900002, 900001, NOW() - INTERVAL '2 hours', 'Staging demo workout note — deload week'),
+      (900003, 900001, NOW() - INTERVAL '24 days', NULL),
+      (900004, 900001, NOW() - INTERVAL '17 days', NULL),
+      (900005, 900001, NOW() - INTERVAL '10 days', NULL)
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -750,7 +899,12 @@ async function seedStagingDemo() {
       (900002, 900001, 900002, NULL, NOW() - INTERVAL '3 days' + INTERVAL '10 minutes'),
       (900003, 900002, 900001, 'Staging demo note — felt strong', NOW() - INTERVAL '2 hours'),
       (900004, 900002, 900003, NULL, NOW() - INTERVAL '2 hours' + INTERVAL '10 minutes'),
-      (900005, 900002, 900004, NULL, NOW() - INTERVAL '2 hours' + INTERVAL '20 minutes')
+      (900005, 900002, 900004, NULL, NOW() - INTERVAL '2 hours' + INTERVAL '20 minutes'),
+      (900006, 900003, 900001, NULL, NOW() - INTERVAL '24 days'),
+      (900007, 900003, 900003, NULL, NOW() - INTERVAL '24 days' + INTERVAL '15 minutes'),
+      (900008, 900004, 900001, NULL, NOW() - INTERVAL '17 days'),
+      (900009, 900004, 900003, NULL, NOW() - INTERVAL '17 days' + INTERVAL '15 minutes'),
+      (900010, 900005, 900001, NULL, NOW() - INTERVAL '10 days')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -763,7 +917,16 @@ async function seedStagingDemo() {
       (900007, 900003, 'reps', 6, 50,   NULL, NULL,      NULL,    TRUE,  NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '4 minutes'),
       (900006, 900004, 'time', NULL, NULL, 60, 'level 8', NULL,   FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '12 minutes'),
       (900008, 900005, 'reps', 10, 20,  NULL, NULL,      'left',  FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '20 minutes'),
-      (900009, 900005, 'reps', 10, 20,  NULL, NULL,      'right', FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '22 minutes')
+      (900009, 900005, 'reps', 10, 20,  NULL, NULL,      'right', FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '22 minutes'),
+      (900010, 900006, 'reps', 8, 50,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '24 days'),
+      (900011, 900006, 'reps', 8, 50,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '24 days' + INTERVAL '3 minutes'),
+      (900012, 900006, 'reps', 6, 40,   NULL, NULL,      NULL,    TRUE,  NULL,                    NOW() - INTERVAL '24 days' + INTERVAL '4 minutes'),
+      (900013, 900007, 'time', NULL, NULL, 45, 'steady', NULL,    FALSE, NULL,                    NOW() - INTERVAL '24 days' + INTERVAL '15 minutes'),
+      (900014, 900008, 'reps', 8, 52.5, NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '17 days'),
+      (900015, 900008, 'reps', 7, 52.5, NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '17 days' + INTERVAL '3 minutes'),
+      (900016, 900009, 'time', NULL, NULL, 50, 'steady', NULL,    FALSE, NULL,                    NOW() - INTERVAL '17 days' + INTERVAL '15 minutes'),
+      (900017, 900010, 'reps', 8, 55,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '10 days'),
+      (900018, 900010, 'reps', 8, 55,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '10 days' + INTERVAL '3 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
