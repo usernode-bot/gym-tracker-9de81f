@@ -782,7 +782,7 @@
     }
     setInterval(tick, 1000);
 
-    // ---------- swipe-to-delete (touch devices) ----------
+    // ---------- deferred delete (swipe on touch, X buttons on desktop) ----------
     // Deferred delete: the row is hidden immediately, but the DELETE request
     // is only sent when the 5s undo window closes — Undo is a pure
     // client-side restore, nothing to recreate server-side.
@@ -971,10 +971,10 @@
           await openSession(+el.dataset.id);
           break;
         case 'delete-session':
-          if (confirm('Delete this workout and everything in it?')) {
-            await api('DELETE', '/api/sessions/' + el.dataset.id);
-            await loadHome();
-          }
+          // No confirm() here — the platform iframe suppresses blocking
+          // dialogs (confirm silently returns false), which made the X
+          // buttons dead. The undo window is the confirmation instead.
+          startPendingDelete('session', +el.dataset.id);
           break;
         case 'back-home':
           openForm = null; editingNote = null; editingSessionNote = false; picker = null;
@@ -1001,11 +1001,7 @@
           break;
         }
         case 'delete-entry':
-          if (confirm('Remove this exercise and its sets?')) {
-            await api('DELETE', '/api/session-exercises/' + el.dataset.entry);
-            openForm = null;
-            await refreshSession();
-          }
+          startPendingDelete('entry', +el.dataset.entry);
           break;
         case 'add-note':
           editingNote = +el.dataset.entry;
@@ -1138,6 +1134,17 @@
     (async () => {
       try { weightUnit = (await api('GET', '/api/settings')).weight_unit === 'lbs' ? 'lbs' : 'kg'; }
       catch (_) {} // default to kg — never block the app on the setting
+      // ?session=<id> deep-links straight into that session's view, and
+      // &picker=1 also opens the add-exercise sheet — like ?import=1, this
+      // lets the proposal checks reach screens that otherwise need clicks.
+      const deepSession = parseInt(params.get('session') || '', 10);
+      if (deepSession) {
+        try {
+          await openSession(deepSession);
+          if (params.get('picker') === '1') await handle('open-picker', null);
+          return;
+        } catch (_) {} // unknown/foreign session — fall through to home
+      }
       await loadHome();
     })().catch((err) => toast(err.message));
   </script>

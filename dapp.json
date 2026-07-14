@@ -12,6 +12,10 @@
     { "name": "Import/export footer renders", "path": "/?demo=1", "expectText": "Export JSON" },
     { "name": "Import button renders", "path": "/", "expectSelector": "[data-action=\"import-json\"]" },
     { "name": "Import sheet opens with Copy format spec button", "path": "/?import=1", "expectSelector": "[data-action=\"copy-format-spec\"]" },
-    { "name": "Unit toggle renders", "path": "/", "expectSelector": "[data-action=\"set-unit\"]" }
+    { "name": "Unit toggle renders", "path": "/", "expectSelector": "[data-action=\"set-unit\"]" },
+    { "name": "Session deep link opens the session view", "path": "/?demo=1&session=900002", "expectText": "Add exercise" },
+    { "name": "Exercise X delete buttons render in session", "path": "/?demo=1&session=900002", "expectSelector": "[data-action=\"delete-entry\"]" },
+    { "name": "Exercise picker opens with search box", "path": "/?demo=1&session=900002&picker=1", "expectSelector": "#picker-search" },
+    { "name": "Exercise picker lists all demo exercises", "path": "/?demo=1&session=900002&picker=1", "expectText": "Staging demo plank" }
   ]
 }
