@@ -121,6 +121,7 @@
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
+    let exportSheet = null;   // { text, filename, count, copied } while the export sheet is open
     let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
     let exerciseView = null;  // { data, metric, from } — per-exercise chart screen
     let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
@@ -315,7 +316,7 @@
           <button data-action="export-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
           <button data-action="import-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
         </div>
-        ${importSheet ? importSheetHtml() : ''}`;
+        ${importSheet ? importSheetHtml() : ''}${exportSheet ? exportSheetHtml() : ''}`;
     }
 
     function setFormHtml() {
@@ -415,6 +416,22 @@
           <textarea id="import-text" rows="8" spellcheck="false" placeholder='{ "sessions": [ { "started_at": "2024-05-03T18:30:00Z", "exercises": [ … ] } ] }' class="${inp} w-full font-mono text-xs" style="min-height:8rem"></textarea>
           ${importSheet.error ? `<div class="text-red-600 dark:text-red-400 text-xs">${esc(importSheet.error)}</div>` : ''}
           <button data-action="run-import" ${importSheet.busy ? 'disabled' : ''} class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-sm font-medium">${importSheet.busy ? 'Importing…' : 'Import'}</button>
+        </div>
+      </div>`;
+    }
+
+    function exportSheetHtml() {
+      return `<div data-action="close-export" class="fixed inset-0 bg-black/60 z-20">
+        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:85vh">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Export workouts</div>
+            <button data-action="close-export" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+          </div>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">${exportSheet.count} workout${exportSheet.count === 1 ? '' : 's'} · ${esc(exportSheet.filename)}</p>
+          <textarea readonly rows="6" spellcheck="false" class="${inp} w-full font-mono text-xs" style="min-height:6rem">${esc(exportSheet.text)}</textarea>
+          <button data-action="download-export" class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Download .json</button>
+          <button data-action="copy-export" class="w-full py-2.5 rounded-lg border ${exportSheet.copied ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-zinc-300 dark:border-zinc-600 text-zinc-700 dark:text-zinc-200 hover:border-zinc-400 dark:hover:border-zinc-500'} text-sm font-medium">${exportSheet.copied ? 'Copied ✓' : 'Copy JSON'}</button>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">If the download doesn’t start (some in-app browsers block it), use Copy JSON and paste into a file or note.</p>
         </div>
       </div>`;
     }
@@ -947,7 +964,7 @@
     async function openProgress() {
       progressHub = { query: '', list: [], strength: null };
       exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
-      openForm = null; picker = null; importSheet = null;
+      openForm = null; picker = null; importSheet = null; exportSheet = null;
       view = 'progress';
       render();
       // Summary failures only cost the tint — never block the hub.
@@ -1225,18 +1242,37 @@
       if (!ok) throw new Error('Couldn’t copy — clipboard unavailable in this browser');
     }
 
-    async function exportJson() {
-      // Can't use api(): the response is a file, not JSON to consume.
+    // The old one-click flow triggered a programmatic <a download> click and
+    // nothing else. Inside the platform's sandboxed iframe (and most in-app
+    // WebViews) that download is silently blocked — no error, no console
+    // output — so the button looked dead. Export now opens a sheet that
+    // shows the data and offers Download plus a Copy fallback that works
+    // everywhere.
+    async function openExportSheet() {
+      // Can't use api(): we want the raw text, not a consumed JSON object.
       const res = await fetch('/api/export' + (demo ? '?demo=1' : ''), { headers: authHeaders });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || 'Export failed (' + res.status + ')');
       }
-      const blob = await res.blob();
+      const text = await res.text();
+      let count = 0;
+      try { count = (JSON.parse(text).sessions || []).length; } catch (_) {}
+      exportSheet = {
+        text,
+        filename: 'gym-tracker-export-' + new Date().toISOString().slice(0, 10) + '.json',
+        count,
+        copied: false,
+      };
+      render();
+    }
+
+    function downloadExport() {
+      const blob = new Blob([exportSheet.text], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'gym-tracker-export-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.download = exportSheet.filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1352,6 +1388,7 @@
       editingNote = null;
       editingSessionNote = false;
       importSheet = null;
+      exportSheet = null;
       picker = null;
       seedStopwatch();
       render();
@@ -1546,7 +1583,7 @@
       if (Date.now() < suppressClicksUntil && !el.closest('#undo-toast')) { suppressClicksUntil = 0; return; }
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
-      if ((action === 'close-picker' || action === 'close-import' || action === 'close-muscle-editor' || action === 'close-bw-editor') && e.target !== el) return;
+      if ((action === 'close-picker' || action === 'close-import' || action === 'close-export' || action === 'close-muscle-editor' || action === 'close-bw-editor') && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
@@ -1788,7 +1825,23 @@
           undoPendingDelete();
           break;
         case 'export-json':
-          await exportJson();
+          await openExportSheet();
+          break;
+        case 'download-export':
+          downloadExport();
+          break;
+        case 'copy-export': {
+          await copyText(exportSheet.text);
+          exportSheet.copied = true;
+          render();
+          setTimeout(() => {
+            if (exportSheet && exportSheet.copied) { exportSheet.copied = false; render(); }
+          }, 1500);
+          break;
+        }
+        case 'close-export':
+          exportSheet = null;
+          render();
           break;
       }
     }
@@ -1830,6 +1883,9 @@
         try { await openMuscleChart(deepMuscle); return; } catch (_) {}
       }
       await loadHome();
+      // ?export=1 deep-links straight to the export sheet — like ?import=1,
+      // it lets the proposal checks exercise the sheet without clicks.
+      if (params.get('export') === '1') await openExportSheet();
     })().catch((err) => toast(err.message));
   </script>
 </body>
