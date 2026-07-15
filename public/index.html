@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <!-- Inline data-URI favicon: prevents the browser's automatic /favicon.ico
        request (which would hit the auth-gated catch-all and 401). -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%237c3aed'/%3E%3Ctext%20x='32'%20y='34'%20font-size='34'%20text-anchor='middle'%20dominant-baseline='central'%3E%F0%9F%8F%8B%EF%B8%8F%3C/text%3E%3C/svg%3E">
@@ -80,6 +80,16 @@
     @media (hover: none) and (pointer: coarse) {
       .x-delete { display: none; }
     }
+    /* Bottom-anchored UI rides above the on-screen keyboard. --kb is the
+       keyboard's occlusion of the layout viewport in px (kept up to date
+       from visualViewport below); it stays 0 where the keyboard resizes
+       the layout viewport instead (interactive-widget=resizes-content). */
+    .sheet { bottom: var(--kb, 0px); }
+    .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px)); }
+    .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px)); }
+    @media (prefers-reduced-motion: no-preference) {
+      .sheet, .kb-bottom-4, .kb-bottom-16 { transition: bottom 150ms ease-out; }
+    }
   </style>
 
   <!-- Theme bootstrap: apply the stored preference (light/dark/system,
@@ -97,11 +107,33 @@
     document.documentElement.classList.toggle('dark', dark);
   })();
   </script>
+
+  <!-- Keyboard inset: expose how much of the layout viewport the on-screen
+       keyboard covers as --kb (px). In environments where the keyboard
+       resizes the layout viewport this stays ~0 and everything degrades to
+       plain bottom-anchoring; where it overlays (iOS Safari / some
+       WebViews) bottom UI offsets itself by var(--kb). -->
+  <script>
+  (function () {
+    var vv = window.visualViewport;
+    if (!vv) return;
+    var raf = 0;
+    function update() {
+      raf = 0;
+      var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--kb', Math.round(kb) + 'px');
+    }
+    function schedule() { if (!raf) raf = requestAnimationFrame(update); }
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    update();
+  })();
+  </script>
 </head>
-<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-screen">
+<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-dvh">
   <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
-  <div id="undo-toast" class="hidden fixed bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
+  <div id="undo-toast" class="hidden fixed kb-bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
     <span id="undo-toast-msg"></span>
     <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
   </div>
@@ -401,7 +433,7 @@
 
     function importSheetHtml() {
       return `<div data-action="close-import" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:85vh">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between">
             <div class="font-semibold">Import workouts</div>
             <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -421,7 +453,7 @@
 
     function pickerHtml() {
       return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:max(12rem, calc(75dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-2">
             <div class="font-semibold">Add exercise</div>
             <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -455,7 +487,7 @@
         <div>${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
         ${picker ? pickerHtml() : ''}
-        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
+        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed kb-bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
           <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
           <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
         </button>`;
@@ -593,7 +625,7 @@
 
     function bwEditorHtml() {
       return `<div data-action="close-bw-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Bodyweight</div>
             <button data-action="close-bw-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -833,7 +865,7 @@
     function muscleEditorHtml() {
       const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
       return `<div data-action="close-muscle-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Muscle groups</div>
             <button data-action="close-muscle-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -985,14 +1017,40 @@
       render();
     }
 
+    // Carry focus, caret, and in-progress text across the full innerHTML
+    // swap, so a background re-render (e.g. the undo window committing while
+    // the user is typing) doesn't slam the mobile keyboard shut.
+    function captureFocus() {
+      const el = document.activeElement;
+      if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'file' || !el.closest('#app')) return null;
+      const name = el.closest('#set-form') ? el.name : null;
+      if (!el.id && !name) return null;
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
+      return { id: el.id || null, name, value: el.value, start, end };
+    }
+    function restoreFocus(f) {
+      if (!f) return;
+      const el = f.id ? document.getElementById(f.id) : document.querySelector('#set-form [name="' + f.name + '"]');
+      if (!el) return;
+      // If wireInputs just focused a different edit surface, it wins.
+      const active = document.activeElement;
+      if (active && active !== el && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+      if (el.value !== f.value) el.value = f.value;
+      if (active !== el) el.focus({ preventScroll: true });
+      if (f.start !== null && el.setSelectionRange) { try { el.setSelectionRange(f.start, f.end); } catch (_) {} }
+    }
+
     function render() {
       const html = view === 'home' ? homeHtml()
         : view === 'session' ? sessionHtml()
         : view === 'progress' ? progressHtml()
         : view === 'exercise' ? exerciseChartHtml()
         : muscleChartHtml();
+      const focused = captureFocus();
       document.getElementById('app').innerHTML = html;
       wireInputs();
+      restoreFocus(focused);
       tick();
     }
 
@@ -1003,11 +1061,15 @@
         // Auto-focus only a blank form — focusing a pre-filled one pops the
         // mobile keyboard over values the user may just want to log as-is.
         const first = form.querySelector('input');
-        if (first && !first.value) first.focus();
+        if (first && !first.value) {
+          first.focus({ preventScroll: true });
+          first.scrollIntoView({ block: 'nearest' });
+        }
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
-        ni.focus();
+        ni.focus({ preventScroll: true });
+        ni.scrollIntoView({ block: 'nearest' });
         ni.setSelectionRange(ni.value.length, ni.value.length);
         ni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); ni.blur(); }
@@ -1026,7 +1088,8 @@
       }
       const sni = document.getElementById('session-note-input');
       if (sni) {
-        sni.focus();
+        sni.focus({ preventScroll: true });
+        sni.scrollIntoView({ block: 'nearest' });
         sni.setSelectionRange(sni.value.length, sni.value.length);
         sni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); sni.blur(); }
@@ -1064,7 +1127,7 @@
         const si = document.getElementById('picker-search');
         si.value = picker.query;
         si.addEventListener('input', () => { picker.query = si.value; picker.creating = null; renderPickerList(); });
-        si.focus();
+        si.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         renderPickerList();
       }
       if (view === 'progress' && progressHub) {
@@ -1080,7 +1143,7 @@
         const bi = document.getElementById('bw-input');
         if (bi) {
           if (bodyweightKg) bi.value = String(kgToUnitNum(bodyweightKg));
-          bi.focus();
+          bi.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         }
       }
     }
