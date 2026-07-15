@@ -154,7 +154,7 @@
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
     let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
-    let exerciseView = null;  // { data, metric, from } — per-exercise chart screen
+    let exerciseView = null;  // { data, metric, from, confirmDelete, deleting } — per-exercise chart screen
     let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
     let muscleEditor = null;  // { selected } while the muscle tag-edit sheet is open
     let bwEditor = null;      // truthy while the bodyweight sheet is open
@@ -162,7 +162,7 @@
     let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
-    let pendingDelete = null;    // { kind: 'session'|'entry'|'set', id, timer } — deferred swipe delete in its undo window
+    let pendingDelete = null;    // { kind: 'session'|'entry'|'set'|'hist', id, entryIds, timer } — deferred swipe delete in its undo window ('hist' = history row keyed by session id, deleting its entryIds)
     let suppressClicksUntil = 0; // swallows the click browsers synthesize right after a swipe's touchend
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
 
@@ -884,19 +884,28 @@
         ? d.muscles.map((m) => `<span class="px-2 py-0.5 rounded-full bg-violet-600/10 text-violet-700 dark:text-violet-300 text-xs">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
         : '<span class="text-xs italic text-zinc-400 dark:text-zinc-600">no muscle tags</span>';
       const editBtn = demo ? '' : '<button data-action="edit-muscles" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-1 shrink-0">Edit tags</button>';
+      // Hide a history row (and its chart point) while its delete sits in
+      // the undo window, mirroring the home / session lists.
+      const visibleSessions = d.sessions.filter((s) => !isPendingDelete('hist', s.session_id));
       let body;
       if (!d.sessions.length) {
         body = '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No sets logged yet — its history will appear here.</div>';
       } else {
-        const points = d.sessions
+        const points = visibleSessions
           .map((s) => ({ t: new Date(s.started_at).getTime(), v: sessionMetricValue(s.sets, metric) }))
           .filter((p) => p.v !== null);
         const wm = metric === 'maxw' || metric === 'vol' || metric === 'e1rm';
-        const hist = [...d.sessions].reverse().map((s) => `
-          <button data-action="open-session" data-id="${s.session_id}" class="w-full text-left px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60">
-            <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
-            <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
-          </button>`).join('');
+        const hist = [...visibleSessions].reverse().map((s) => `
+          <div class="relative rounded-lg overflow-hidden">
+            <div class="absolute inset-0 rounded-lg bg-red-500 dark:bg-red-600 flex items-center justify-end pr-4 text-white opacity-0" aria-hidden="true">🗑</div>
+            <div data-swipe="hist:${s.session_id}" class="relative flex items-stretch rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+              <button data-action="open-session" data-id="${s.session_id}" class="flex-1 text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
+                <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
+                <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
+              </button>
+              <button data-action="delete-history-entry" data-session="${s.session_id}" class="x-delete px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete this exercise from that workout">✕</button>
+            </div>
+          </div>`).join('');
         body = `
           ${metrics.length > 1 ? metricToggleHtml(metrics, metric) : ''}
           <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${METRIC_LABELS[metric]}${wm ? ' · ' + weightUnit : ''}</div>
@@ -904,17 +913,32 @@
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">History</div>
           <div class="space-y-1.5 pb-6">${hist}</div>`;
       }
+      // Whole-exercise delete: too destructive for the 5s undo window, so it
+      // uses an inline two-step confirm instead (blocking confirm() dialogs
+      // are suppressed in the platform iframe).
+      const delBlock = exerciseView.confirmDelete
+        ? `<div class="mt-2 mb-8 rounded-xl border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3">
+            <div class="text-sm text-red-700 dark:text-red-300">Delete “${esc(d.name)}” and its entire history${visibleSessions.length ? ` (${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'})` : ''}? This can’t be undone.</div>
+            <div class="flex gap-2 mt-2.5">
+              <button data-action="delete-exercise-confirm" ${exerciseView.deleting ? 'disabled' : ''} class="flex-1 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-medium">${exerciseView.deleting ? 'Deleting…' : 'Delete everything'}</button>
+              <button data-action="delete-exercise-cancel" class="px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-700/60 text-sm">Cancel</button>
+            </div>
+          </div>`
+        : `<div class="mt-2 mb-8 text-center">
+            <button data-action="delete-exercise" class="text-xs text-zinc-500 hover:text-red-600 dark:text-zinc-600 dark:hover:text-red-400 px-2 py-1">🗑 Delete exercise…</button>
+          </div>`;
       return `
         <header class="flex items-center gap-2 py-4">
           <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
           <div class="ml-1 flex-1 min-w-0">
             <div class="font-semibold truncate">${esc(d.name)}</div>
-            <div class="text-xs text-zinc-500">${d.sessions.length} workout${d.sessions.length === 1 ? '' : 's'}</div>
+            <div class="text-xs text-zinc-500">${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'}</div>
           </div>
           ${unitSwitcherHtml()}
         </header>
         <div class="flex items-center gap-1.5 flex-wrap mb-3">${typeBadgeHtml(d.exercise_type)}${tagChips}${editBtn}</div>
         ${body}
+        ${delBlock}
         ${muscleEditor ? muscleEditorHtml() : ''}`;
     }
 
@@ -1408,6 +1432,21 @@
         await loadHome();
       }
     }
+    // Reload the exercise chart screen in place (after a history-row delete),
+    // keeping the selected metric when it still applies.
+    async function refreshExerciseView() {
+      if (!exerciseView) return;
+      try {
+        const data = await api('GET', '/api/exercises/' + exerciseView.data.id + '/history');
+        exerciseView.data = data;
+        const metrics = exerciseMetrics(data);
+        if (!metrics.includes(exerciseView.metric)) exerciseView.metric = metrics[0] || 'maxw';
+        render();
+      } catch (err) {
+        toast(err.message);
+        await loadHome();
+      }
+    }
     async function openSession(id) {
       session = await api('GET', '/api/sessions/' + id);
       view = 'session';
@@ -1445,15 +1484,19 @@
     // Deferred delete: the row is hidden immediately, but the DELETE request
     // is only sent when the 5s undo window closes — Undo is a pure
     // client-side restore, nothing to recreate server-side.
-    const DELETE_LABELS = { session: 'Workout deleted', entry: 'Exercise removed', set: 'Set deleted' };
+    const DELETE_LABELS = { session: 'Workout deleted', entry: 'Exercise removed', set: 'Set deleted', hist: 'Removed from that workout' };
 
     function isPendingDelete(kind, id) {
       return !!pendingDelete && pendingDelete.kind === kind && pendingDelete.id === id;
     }
-    function deleteUrlFor(kind, id) {
-      if (kind === 'session') return '/api/sessions/' + id;
-      if (kind === 'entry') return '/api/session-exercises/' + id;
-      return '/api/sets/' + id;
+    // 'hist' rows (exercise history) key on the session id but delete the
+    // underlying entry rows — usually one, more if the exercise was added to
+    // that workout twice.
+    function deleteUrlsFor(pd) {
+      if (pd.kind === 'session') return ['/api/sessions/' + pd.id];
+      if (pd.kind === 'entry') return ['/api/session-exercises/' + pd.id];
+      if (pd.kind === 'hist') return (pd.entryIds || []).map((id) => '/api/session-exercises/' + id);
+      return ['/api/sets/' + pd.id];
     }
     function showUndoToast(msg) {
       document.getElementById('undo-toast-msg').textContent = msg;
@@ -1463,8 +1506,16 @@
       document.getElementById('undo-toast').classList.add('hidden');
     }
     function startPendingDelete(kind, id) {
+      // Resolve the entry ids up front — the commit may fire after the view
+      // (and exerciseView with it) has moved on.
+      let entryIds = null;
+      if (kind === 'hist') {
+        const s = exerciseView && exerciseView.data.sessions.find((x) => x.session_id === id);
+        entryIds = s ? s.entry_ids : [];
+        if (!entryIds.length) return;
+      }
       flushPendingDelete().catch((err) => toast(err.message)); // a new swipe commits the previous pending delete right away
-      pendingDelete = { kind, id, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000) };
+      pendingDelete = { kind, id, entryIds, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000) };
       render();
       showUndoToast(DELETE_LABELS[kind]);
     }
@@ -1485,7 +1536,7 @@
       if (openForm && ((pd.kind === 'entry' && openForm.entryId === pd.id) || (pd.kind === 'set' && openForm.setId === pd.id))) openForm = null;
       let failed = false;
       try {
-        await api('DELETE', deleteUrlFor(pd.kind, pd.id));
+        for (const url of deleteUrlsFor(pd)) await api('DELETE', url);
       } catch (err) {
         failed = true;
         toast(err.message);
@@ -1494,7 +1545,9 @@
         // carry in-progress set-form typing across the re-render
         const form = document.getElementById('set-form');
         if (form && openForm) openForm.draft = readDraft(form);
-        if (view === 'home' || !session) await loadHome(); else await refreshSession();
+        if (view === 'exercise' && exerciseView) await refreshExerciseView();
+        else if (view === 'home' || !session) await loadHome();
+        else await refreshSession();
       }
     }
     function flushPendingDelete() {
@@ -1508,14 +1561,18 @@
       clearTimeout(pd.timer);
       hideUndoToast();
       needsRefreshOnShow = true;
-      try { fetch(deleteUrlFor(pd.kind, pd.id), { method: 'DELETE', headers: authHeaders, keepalive: true }); } catch (_) {}
+      try {
+        for (const url of deleteUrlsFor(pd)) fetch(url, { method: 'DELETE', headers: authHeaders, keepalive: true });
+      } catch (_) {}
     }
     window.addEventListener('pagehide', flushPendingDeleteKeepalive);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') flushPendingDeleteKeepalive();
       else if (needsRefreshOnShow) {
         needsRefreshOnShow = false;
-        (view === 'home' || !session ? loadHome() : refreshSession()).catch((err) => toast(err.message));
+        (view === 'exercise' && exerciseView ? refreshExerciseView()
+          : view === 'home' || !session ? loadHome()
+          : refreshSession()).catch((err) => toast(err.message));
       }
     });
 
@@ -1616,7 +1673,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -1741,6 +1798,34 @@
         case 'delete-entry':
           startPendingDelete('entry', +el.dataset.entry);
           break;
+        case 'delete-history-entry':
+          // Same undo-window confirmation as the other deletes (blocking
+          // confirm() dialogs are suppressed in the platform iframe).
+          startPendingDelete('hist', +el.dataset.session);
+          break;
+        case 'delete-exercise':
+          exerciseView.confirmDelete = true;
+          render();
+          break;
+        case 'delete-exercise-cancel':
+          exerciseView.confirmDelete = false;
+          render();
+          break;
+        case 'delete-exercise-confirm': {
+          if (exerciseView.deleting) break;
+          exerciseView.deleting = true;
+          render();
+          try {
+            await api('DELETE', '/api/exercises/' + exerciseView.data.id);
+          } catch (err) {
+            exerciseView.deleting = false;
+            render();
+            throw err;
+          }
+          toast('Exercise deleted', true);
+          await openProgress();
+          break;
+        }
         case 'add-note':
           editingNote = +el.dataset.entry;
           render();
