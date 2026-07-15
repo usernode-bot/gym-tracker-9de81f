@@ -366,7 +366,7 @@ app.get('/api/exercises/:id/history', wrap(async (req, res) => {
   )).rows[0];
   if (!ex) return res.status(404).json({ error: 'Exercise not found' });
   const rows = (await pool.query(
-    `SELECT s.id AS session_id, s.started_at, st.set_type, st.reps, st.weight,
+    `SELECT s.id AS session_id, s.started_at, se.id AS entry_id, st.set_type, st.reps, st.weight,
             st.duration_seconds, st.effort, st.side, st.is_drop, st.note
      FROM sets st
      JOIN session_exercises se ON se.id = st.session_exercise_id
@@ -380,7 +380,10 @@ app.get('/api/exercises/:id/history', wrap(async (req, res) => {
     const last = sessions[sessions.length - 1];
     const bucket = last && last.session_id === r.session_id
       ? last
-      : (sessions.push({ session_id: r.session_id, started_at: r.started_at, sets: [] }), sessions[sessions.length - 1]);
+      : (sessions.push({ session_id: r.session_id, started_at: r.started_at, entry_ids: [], sets: [] }), sessions[sessions.length - 1]);
+    // entry_ids lets the history view delete this exercise from that workout
+    // (a session normally has one entry per exercise, but duplicates happen).
+    if (!bucket.entry_ids.includes(r.entry_id)) bucket.entry_ids.push(r.entry_id);
     bucket.sets.push({ set_type: r.set_type, reps: r.reps, weight: r.weight, duration_seconds: r.duration_seconds, effort: r.effort, side: r.side, is_drop: r.is_drop, note: r.note });
   }
   res.json({ id: ex.id, name: ex.name, muscles: ex.muscles || [], sessions });
