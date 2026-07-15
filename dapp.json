@@ -21,6 +21,7 @@
     { "name": "Progress hub shows body diagram", "path": "/?demo=1&progress=1", "expectSelector": "[data-body-diagram]" },
     { "name": "Exercise chart deep link renders chart", "path": "/?demo=1&exercise=900001", "expectSelector": "[data-chart]" },
     { "name": "Exercise chart shows exercise name", "path": "/?demo=1&exercise=900001", "expectText": "Staging demo bench press" },
+    { "name": "Exercise history rows have delete buttons", "path": "/?demo=1&exercise=900001", "expectSelector": "[data-action=\"delete-history-entry\"]" },
     { "name": "Time exercise chart renders", "path": "/?demo=1&exercise=900003", "expectSelector": "[data-chart]" },
     { "name": "Muscle chart deep link renders", "path": "/?demo=1&muscle=chest", "expectSelector": "[data-chart]" },
     { "name": "Muscle chart lists contributing exercise", "path": "/?demo=1&muscle=chest", "expectText": "Staging demo bench press" },
