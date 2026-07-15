@@ -1243,8 +1243,9 @@
       const en = findEntryLocal(entryId);
       const src = (en.sets.length && en.sets[en.sets.length - 1]) ||
         (en.last_time && en.last_time.sets.length && en.last_time.sets[en.last_time.sets.length - 1]);
-      // Side carries over (log left, flip one toggle to log right); note and
-      // the drop flag always start fresh.
+      // The form closes after each logged set, so this prefill is what keeps
+      // repeat entry fast: side carries over (log left, flip one toggle to
+      // log right); note and the drop flag always start fresh.
       if (src) { const d = draftFromSet(src); d.note = ''; d.drop = false; return d; }
       return { type: 'reps', reps: '', weight: '', weightKg: null, duration: '', effort: '', side: '', drop: false, note: '' };
     }
@@ -1284,7 +1285,7 @@
         } else {
           await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
           stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
-          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, weightKg: body.weight ?? null, note: '', drop: false }, error: '' };
+          openForm = null; // close on success; the next "+ Add set" prefills from this set
         }
         await refreshSession();
       } catch (err) {
