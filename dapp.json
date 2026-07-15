@@ -17,6 +17,7 @@
     { "name": "Exercise X delete buttons render in session", "path": "/?demo=1&session=900002", "expectSelector": "[data-action=\"delete-entry\"]" },
     { "name": "Exercise picker opens with search box", "path": "/?demo=1&session=900002&picker=1", "expectSelector": "#picker-search" },
     { "name": "Exercise picker lists all demo exercises", "path": "/?demo=1&session=900002&picker=1", "expectText": "Staging demo plank" },
+    { "name": "Picker shows exercise type badges", "path": "/?demo=1&session=900002&picker=1", "expectSelector": "[data-ex-type=\"time\"]" },
     { "name": "Progress entry point on home", "path": "/?demo=1", "expectSelector": "[data-action=\"open-progress\"]" },
     { "name": "Progress hub shows body diagram", "path": "/?demo=1&progress=1", "expectSelector": "[data-body-diagram]" },
     { "name": "Exercise chart deep link renders chart", "path": "/?demo=1&exercise=900001", "expectSelector": "[data-chart]" },
