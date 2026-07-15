@@ -27,6 +27,7 @@
     { "name": "Muscle chart defaults to Est. 1RM with strength level", "path": "/?demo=1&muscle=chest", "expectText": "Intermediate" },
     { "name": "Quads strength score rolls up from the squat", "path": "/?demo=1&muscle=quads", "expectText": "Novice" },
     { "name": "Body map strength legend renders in demo", "path": "/?demo=1&progress=1", "expectText": "Advanced" },
-    { "name": "Bodyweight prompt shows for a fresh user", "path": "/?progress=1", "expectText": "Set your bodyweight" }
+    { "name": "Bodyweight prompt shows for a fresh user", "path": "/?progress=1", "expectText": "Set your bodyweight" },
+    { "name": "Keyboard viewport directive present", "path": "/", "expectSelector": "meta[content*=\"interactive-widget\"]" }
   ]
 }
