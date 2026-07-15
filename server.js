@@ -106,17 +106,25 @@ function suggestMuscles(name) {
 }
 
 // Merge a set payload over an existing row (null for create) and validate.
-// If set_type flips reps↔time, the new type's fields must be in the patch;
-// the other type's fields are nulled to keep the populated-columns
-// convention intact.
-function buildSetValues(body, existing) {
+// The payload never chooses set_type: on create it's fixed by the exercise
+// (createType — or, for imports, the type the file declares per set), on
+// edit it's the existing row's type. The old reps↔time flip is gone; an
+// explicit mismatching set_type in the body is an error, so legacy sets
+// whose type differs from their exercise stay editable in their own shape.
+function buildSetValues(body, existing, createType) {
   const has = (k) => body !== null && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, k);
-  const set_type = has('set_type') ? body.set_type : (existing ? existing.set_type : undefined);
+  const set_type = existing ? existing.set_type : createType;
   if (set_type !== 'reps' && set_type !== 'time') {
     return { error: 'set_type must be "reps" or "time"' };
   }
-  const flipped = !!existing && set_type !== existing.set_type;
-  const inherit = (k) => (existing && !flipped ? existing[k] : undefined);
+  if (has('set_type') && body.set_type !== set_type) {
+    return {
+      error: existing
+        ? 'set type is fixed — a set keeps its reps/time shape'
+        : `this exercise logs ${set_type === 'reps' ? '"reps"' : '"time"'} sets`,
+    };
+  }
+  const inherit = (k) => (existing ? existing[k] : undefined);
   const out = { set_type, reps: null, weight: null, duration_seconds: null, effort: null };
 
   if (set_type === 'reps') {
@@ -143,8 +151,6 @@ function buildSetValues(body, existing) {
     const effort = effortSrc === null || effortSrc === undefined ? null : String(effortSrc).trim().slice(0, 120);
     out.effort = effort || null;
   }
-  // side / is_drop / note apply to both shapes, so they survive a reps↔time
-  // flip: inherit straight from the existing row, not via type-scoped inherit().
   const sideSrc = has('side') ? body.side : (existing ? existing.side : null);
   if (sideSrc !== null && sideSrc !== undefined && sideSrc !== '' && sideSrc !== 'left' && sideSrc !== 'right') {
     return { error: 'side must be "left", "right", or null' };
@@ -157,9 +163,10 @@ function buildSetValues(body, existing) {
 
 async function findEntry(entryId, userId) {
   const { rows } = await pool.query(
-    `SELECT se.id, se.session_id, se.exercise_id, se.note
+    `SELECT se.id, se.session_id, se.exercise_id, se.note, e.exercise_type
      FROM session_exercises se
      JOIN workout_sessions s ON s.id = se.session_id
+     JOIN exercises e ON e.id = se.exercise_id
      WHERE se.id = $1 AND s.user_id = $2`,
     [entryId, userId]
   );
@@ -223,7 +230,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   // Entries plus, per entry, the most recent EARLIER session's entry for the
   // same exercise ("last time") — only counting entries that have sets.
   const entries = (await pool.query(
-    `SELECT se.id, se.exercise_id, se.note, e.name,
+    `SELECT se.id, se.exercise_id, se.note, e.name, e.exercise_type,
             lt.entry_id AS lt_entry_id, lt.lt_started_at
      FROM session_exercises se
      JOIN exercises e ON e.id = se.exercise_id
@@ -267,6 +274,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
       id: e.id,
       exercise_id: e.exercise_id,
       name: e.name,
+      exercise_type: e.exercise_type,
       note: e.note,
       sets: setsByEntry[e.id] || [],
       last_time: e.lt_entry_id
@@ -310,7 +318,7 @@ app.get('/api/exercises', wrap(async (req, res) => {
   const q = String(req.query.q || '').trim();
   const pattern = '%' + q.replace(/([\\%_])/g, '\\$1') + '%';
   const { rows } = await pool.query(
-    `SELECT e.id, e.name, e.muscles
+    `SELECT e.id, e.name, e.muscles, e.exercise_type
      FROM exercises e
      LEFT JOIN session_exercises se ON se.exercise_id = e.id
      WHERE e.user_id = $1 AND e.name ILIKE $2
@@ -325,14 +333,19 @@ app.post('/api/exercises', wrap(async (req, res) => {
   const name = String((req.body && req.body.name) || '').trim().replace(/\s+/g, ' ');
   if (!name) return res.status(400).json({ error: 'Exercise name is required' });
   if (name.length > 120) return res.status(400).json({ error: 'Exercise name must be 120 characters or fewer' });
+  const exercise_type = req.body && req.body.exercise_type;
+  if (exercise_type !== 'reps' && exercise_type !== 'time') {
+    return res.status(400).json({ error: 'exercise_type must be "reps" or "time"' });
+  }
   // Create-or-get: the no-op DO UPDATE makes RETURNING yield the existing
-  // row on a case-insensitive duplicate, keeping its original casing (and
-  // its existing muscle tags — the suggestion only lands on a fresh insert).
+  // row on a case-insensitive duplicate, keeping its original casing, muscle
+  // tags AND type — the submitted exercise_type only lands on a fresh insert,
+  // so an existing exercise's type can never be changed through this route.
   const { rows } = await pool.query(
-    `INSERT INTO exercises (user_id, name, muscles) VALUES ($1, $2, $3)
+    `INSERT INTO exercises (user_id, name, muscles, exercise_type) VALUES ($1, $2, $3, $4)
      ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
-     RETURNING id, name, muscles`,
-    [req.user.id, name, suggestMuscles(name)]
+     RETURNING id, name, muscles, exercise_type`,
+    [req.user.id, name, suggestMuscles(name), exercise_type]
   );
   res.json({ ...rows[0], muscles: rows[0].muscles || [] });
 }));
@@ -361,7 +374,7 @@ app.get('/api/exercises/:id/history', wrap(async (req, res) => {
   const exId = idParam(req.params.id);
   if (!exId) return res.status(404).json({ error: 'Exercise not found' });
   const ex = (await pool.query(
-    'SELECT id, name, muscles FROM exercises WHERE id = $1 AND user_id = $2',
+    'SELECT id, name, muscles, exercise_type FROM exercises WHERE id = $1 AND user_id = $2',
     [exId, uid]
   )).rows[0];
   if (!ex) return res.status(404).json({ error: 'Exercise not found' });
@@ -383,7 +396,7 @@ app.get('/api/exercises/:id/history', wrap(async (req, res) => {
       : (sessions.push({ session_id: r.session_id, started_at: r.started_at, sets: [] }), sessions[sessions.length - 1]);
     bucket.sets.push({ set_type: r.set_type, reps: r.reps, weight: r.weight, duration_seconds: r.duration_seconds, effort: r.effort, side: r.side, is_drop: r.is_drop, note: r.note });
   }
-  res.json({ id: ex.id, name: ex.name, muscles: ex.muscles || [], sessions });
+  res.json({ id: ex.id, name: ex.name, muscles: ex.muscles || [], exercise_type: ex.exercise_type, sessions });
 }));
 
 // Per-session set history across ALL exercises tagged with a muscle group,
@@ -491,7 +504,9 @@ app.post('/api/session-exercises/:id/sets', wrap(async (req, res) => {
   if (!entryId) return res.status(404).json({ error: 'Entry not found' });
   const entry = await findEntry(entryId, req.user.id);
   if (!entry) return res.status(404).json({ error: 'Entry not found' });
-  const { error, values } = buildSetValues(req.body || {}, null);
+  // New sets always take the exercise's fixed type ('reps' covers any
+  // pre-backfill row that somehow still lacks one).
+  const { error, values } = buildSetValues(req.body || {}, null, entry.exercise_type || 'reps');
   if (error) return res.status(400).json({ error });
   const { rows } = await pool.query(
     `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note)
@@ -551,7 +566,7 @@ app.get('/api/export', wrap(async (req, res) => {
     [uid]
   )).rows;
   const entries = (await pool.query(
-    `SELECT se.id, se.session_id, se.note, e.name
+    `SELECT se.id, se.session_id, se.note, e.name, e.exercise_type
      FROM session_exercises se
      JOIN exercises e ON e.id = se.exercise_id
      JOIN workout_sessions s ON s.id = se.session_id
@@ -590,6 +605,7 @@ app.get('/api/export', wrap(async (req, res) => {
       note: s.note,
       exercises: (entriesBySession[s.id] || []).map((en) => ({
         name: en.name,
+        type: en.exercise_type,
         note: en.note,
         sets: (setsByEntry[en.id] || []).map(exportSet),
       })),
@@ -606,7 +622,13 @@ function parseImportDate(v) {
 
 // Validate the whole payload up front (all-or-nothing — nothing is written
 // if any part is invalid), returning either { error } with a JSON-path-style
-// pointer or the parsed sessions ready to insert.
+// pointer or the parsed sessions ready to insert plus exTypes, a map of
+// lowercased exercise name → 'reps'|'time' used only when the import has to
+// CREATE the exercise: an explicit exercise-level "type" wins, else the
+// majority set type for that name across the whole file (tie/none → 'reps'
+// — same rule as the boot backfill). Per-set types are written verbatim
+// even when they mismatch an exercise's type, so old mixed-history exports
+// stay importable and re-imports stay idempotent.
 function parseImportPayload(body) {
   const sessions = Array.isArray(body)
     ? body
@@ -617,6 +639,7 @@ function parseImportPayload(body) {
   }
 
   const parsed = [];
+  const typeTally = new Map(); // lower(name) → { explicit, reps, time }
   let totalSets = 0;
   for (let i = 0; i < sessions.length; i++) {
     const at = `sessions[${i}]`;
@@ -635,6 +658,15 @@ function parseImportPayload(body) {
       const name = String(ex.name || '').trim().replace(/\s+/g, ' ');
       if (!name) return { error: `${exAt}.name: exercise name is required` };
       if (name.length > 120) return { error: `${exAt}.name: exercise name must be 120 characters or fewer` };
+      const nameKey = name.toLowerCase();
+      let tally = typeTally.get(nameKey);
+      if (!tally) { tally = { explicit: null, reps: 0, time: 0 }; typeTally.set(nameKey, tally); }
+      if (ex.type !== undefined && ex.type !== null) {
+        if (ex.type !== 'reps' && ex.type !== 'time') {
+          return { error: `${exAt}.type: must be "reps" or "time"` };
+        }
+        if (!tally.explicit) tally.explicit = ex.type;
+      }
       const rawSets = ex.sets === undefined || ex.sets === null ? [] : ex.sets;
       if (!Array.isArray(rawSets)) return { error: `${exAt}.sets: must be an array` };
 
@@ -645,12 +677,15 @@ function parseImportPayload(body) {
         if (!st || typeof st !== 'object' || Array.isArray(st)) return { error: `${setAt}: expected an object` };
         // The export format says `type`/`drop`; also accept `set_type` /
         // `is_drop` verbatim. buildSetValues validates side and is_drop.
+        // The file's per-set type is authoritative here (see exTypes note).
+        const setType = st.set_type !== undefined ? st.set_type : st.type;
         const { error, values } = buildSetValues({
           ...st,
-          set_type: st.set_type !== undefined ? st.set_type : st.type,
+          set_type: setType,
           is_drop: st.is_drop !== undefined ? st.is_drop : st.drop,
-        }, null);
+        }, null, setType);
         if (error) return { error: `${setAt}: ${error}` };
+        tally[values.set_type]++;
         if (st.created_at !== undefined && st.created_at !== null) {
           const d = parseImportDate(st.created_at);
           if (!d) return { error: `${setAt}.created_at: must be a valid date string` };
@@ -666,11 +701,15 @@ function parseImportPayload(body) {
   if (totalSets > MAX_IMPORT_SETS) {
     return { error: `Too many sets: ${totalSets} (max ${MAX_IMPORT_SETS} per import)` };
   }
-  return { parsed };
+  const exTypes = new Map();
+  for (const [key, t] of typeTally) {
+    exTypes.set(key, t.explicit || (t.time > t.reps ? 'time' : 'reps'));
+  }
+  return { parsed, exTypes };
 }
 
 app.post('/api/import', wrap(async (req, res) => {
-  const { error, parsed } = parseImportPayload(req.body);
+  const { error, parsed, exTypes } = parseImportPayload(req.body);
   if (error) return res.status(400).json({ error });
 
   // Duplicate-skip by exact started_at: re-importing your own export is
@@ -699,11 +738,13 @@ app.post('/api/import', wrap(async (req, res) => {
         const nameKey = en.name.toLowerCase();
         let exId = exerciseIds.get(nameKey);
         if (!exId) {
+          // The type (like the muscle suggestion) only lands on a fresh
+          // insert — an existing exercise keeps its fixed type.
           exId = (await client.query(
-            `INSERT INTO exercises (user_id, name, muscles) VALUES ($1, $2, $3)
+            `INSERT INTO exercises (user_id, name, muscles, exercise_type) VALUES ($1, $2, $3, $4)
              ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
              RETURNING id`,
-            [req.user.id, en.name, suggestMuscles(en.name)]
+            [req.user.id, en.name, suggestMuscles(en.name), exTypes.get(nameKey) || 'reps']
           )).rows[0].id;
           exerciseIds.set(nameKey, exId);
         }
@@ -831,6 +872,10 @@ async function migrate() {
   `);
   // NULL = never auto-suggested; array (even empty) = suggested/user-edited.
   await pool.query(`ALTER TABLE exercises ADD COLUMN IF NOT EXISTS muscles TEXT[]`);
+  // Immutable per-exercise logging shape (issue #19): chosen at creation,
+  // never editable. Nullable in the schema (idempotent-migration style);
+  // the API requires it on create and the backfill below fills legacy rows.
+  await pool.query(`ALTER TABLE exercises ADD COLUMN IF NOT EXISTS exercise_type VARCHAR(10) CHECK (exercise_type IN ('reps', 'time'))`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS workout_sessions (
       id SERIAL PRIMARY KEY,
@@ -904,6 +949,24 @@ async function migrate() {
   for (const r of untagged) {
     await pool.query('UPDATE exercises SET muscles = $2 WHERE id = $1 AND muscles IS NULL', [r.id, suggestMuscles(r.name)]);
   }
+
+  // One-time exercise_type backfill for pre-feature rows: the majority
+  // set_type among the exercise's logged sets wins; a tie or no sets at all
+  // defaults to 'reps' (the app's historical default shape). Only NULL rows
+  // are touched, so re-running is a no-op.
+  await pool.query(`
+    UPDATE exercises e SET exercise_type = COALESCE(t.majority, 'reps')
+    FROM (SELECT e2.id,
+                 CASE WHEN COUNT(*) FILTER (WHERE st.set_type = 'time')
+                         > COUNT(*) FILTER (WHERE st.set_type = 'reps')
+                      THEN 'time' ELSE 'reps' END AS majority
+          FROM exercises e2
+          LEFT JOIN session_exercises se ON se.exercise_id = e2.id
+          LEFT JOIN sets st ON st.session_exercise_id = se.id
+          WHERE e2.exercise_type IS NULL
+          GROUP BY e2.id) t
+    WHERE e.id = t.id AND e.exercise_type IS NULL
+  `);
 }
 
 // Idempotent staging-only demo data under fake user 900001 — surfaced to
@@ -912,26 +975,32 @@ async function migrate() {
 async function seedStagingDemo() {
   if (!IS_STAGING) return;
   await pool.query(`
-    INSERT INTO exercises (id, user_id, name) VALUES
-      (900001, 900001, 'Staging demo bench press'),
-      (900002, 900001, 'Staging demo squat'),
-      (900003, 900001, 'Staging demo plank'),
-      (900004, 900001, 'Staging demo split squat')
+    INSERT INTO exercises (id, user_id, name, exercise_type) VALUES
+      (900001, 900001, 'Staging demo bench press', 'reps'),
+      (900002, 900001, 'Staging demo squat', 'reps'),
+      (900003, 900001, 'Staging demo plank', 'time'),
+      (900004, 900001, 'Staging demo split squat', 'reps')
     ON CONFLICT (id) DO NOTHING
   `);
   // Explicit demo muscle tags: on a long-lived staging DB the exercise rows
   // above already exist (insert skipped) and may predate the muscles column,
   // so tag them here — idempotently, without clobbering anything non-empty.
   const demoTags = [
-    [900001, ['chest', 'triceps']],
-    [900002, ['quads', 'glutes']],
-    [900003, ['core']],
-    [900004, ['quads', 'glutes']],
+    [900001, ['chest', 'triceps'], 'reps'],
+    [900002, ['quads', 'glutes'], 'reps'],
+    [900003, ['core'], 'time'],
+    [900004, ['quads', 'glutes'], 'reps'],
   ];
-  for (const [id, muscles] of demoTags) {
+  for (const [id, muscles, type] of demoTags) {
     await pool.query(
       `UPDATE exercises SET muscles = $2 WHERE id = $1 AND user_id = 900001 AND (muscles IS NULL OR muscles = '{}')`,
       [id, muscles]
+    );
+    // Same pre-feature-rows story for exercise_type (the migrate() backfill
+    // normally covers these via their demo sets — this is belt and braces).
+    await pool.query(
+      `UPDATE exercises SET exercise_type = $2 WHERE id = $1 AND user_id = 900001 AND exercise_type IS NULL`,
+      [id, type]
     );
   }
   // Sessions 900003–900005 are OLDER history so the progress charts have a
