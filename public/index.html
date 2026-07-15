@@ -122,7 +122,7 @@
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
     let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
-    let exerciseView = null;  // { data, metric, from } — per-exercise chart screen
+    let exerciseView = null;  // { data, metric, from, confirmDelete, deleting } — per-exercise chart screen
     let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
     let muscleEditor = null;  // { selected } while the muscle tag-edit sheet is open
     let bwEditor = null;      // truthy while the bodyweight sheet is open
@@ -863,6 +863,20 @@
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">History</div>
           <div class="space-y-1.5 pb-6">${hist}</div>`;
       }
+      // Whole-exercise delete: too destructive for the 5s undo window, so it
+      // uses an inline two-step confirm instead (blocking confirm() dialogs
+      // are suppressed in the platform iframe).
+      const delBlock = exerciseView.confirmDelete
+        ? `<div class="mt-2 mb-8 rounded-xl border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3">
+            <div class="text-sm text-red-700 dark:text-red-300">Delete “${esc(d.name)}” and its entire history${visibleSessions.length ? ` (${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'})` : ''}? This can’t be undone.</div>
+            <div class="flex gap-2 mt-2.5">
+              <button data-action="delete-exercise-confirm" ${exerciseView.deleting ? 'disabled' : ''} class="flex-1 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-medium">${exerciseView.deleting ? 'Deleting…' : 'Delete everything'}</button>
+              <button data-action="delete-exercise-cancel" class="px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-700/60 text-sm">Cancel</button>
+            </div>
+          </div>`
+        : `<div class="mt-2 mb-8 text-center">
+            <button data-action="delete-exercise" class="text-xs text-zinc-500 hover:text-red-600 dark:text-zinc-600 dark:hover:text-red-400 px-2 py-1">🗑 Delete exercise…</button>
+          </div>`;
       return `
         <header class="flex items-center gap-2 py-4">
           <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
@@ -874,6 +888,7 @@
         </header>
         <div class="flex items-center gap-1.5 flex-wrap mb-3">${tagChips}${editBtn}</div>
         ${body}
+        ${delBlock}
         ${muscleEditor ? muscleEditorHtml() : ''}`;
     }
 
@@ -1559,7 +1574,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -1684,6 +1699,29 @@
           // confirm() dialogs are suppressed in the platform iframe).
           startPendingDelete('hist', +el.dataset.session);
           break;
+        case 'delete-exercise':
+          exerciseView.confirmDelete = true;
+          render();
+          break;
+        case 'delete-exercise-cancel':
+          exerciseView.confirmDelete = false;
+          render();
+          break;
+        case 'delete-exercise-confirm': {
+          if (exerciseView.deleting) break;
+          exerciseView.deleting = true;
+          render();
+          try {
+            await api('DELETE', '/api/exercises/' + exerciseView.data.id);
+          } catch (err) {
+            exerciseView.deleting = false;
+            render();
+            throw err;
+          }
+          toast('Exercise deleted', true);
+          await openProgress();
+          break;
+        }
         case 'add-note':
           editingNote = +el.dataset.entry;
           render();

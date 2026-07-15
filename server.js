@@ -353,6 +353,38 @@ app.patch('/api/exercises/:id', wrap(async (req, res) => {
   res.json({ ...rows[0], muscles: rows[0].muscles || [] });
 }));
 
+// Delete an exercise and its entire history. Ownership of the exercise
+// implies ownership of every entry referencing it (entries are only ever
+// created against the same user's sessions), so deleting by exercise_id is
+// safe after the user_id check. Entries go explicitly (no cascade on that
+// FK); their sets cascade. Transactional so a failure can't strand an
+// exercise with half its history gone.
+app.delete('/api/exercises/:id', wrap(async (req, res) => {
+  const id = idParam(req.params.id);
+  if (!id) return res.status(404).json({ error: 'Exercise not found' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ex = (await client.query(
+      'SELECT id FROM exercises WHERE id = $1 AND user_id = $2',
+      [id, req.user.id]
+    )).rows[0];
+    if (!ex) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Exercise not found' });
+    }
+    await client.query('DELETE FROM session_exercises WHERE exercise_id = $1', [id]);
+    await client.query('DELETE FROM exercises WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
 // Full per-session set history for one exercise, oldest session first.
 // Raw sets, no aggregates — the client computes chart metrics so kg→display
 // unit conversion stays client-side.
