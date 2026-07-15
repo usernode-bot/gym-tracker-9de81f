@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <!-- Inline data-URI favicon: prevents the browser's automatic /favicon.ico
        request (which would hit the auth-gated catch-all and 401). -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%237c3aed'/%3E%3Ctext%20x='32'%20y='34'%20font-size='34'%20text-anchor='middle'%20dominant-baseline='central'%3E%F0%9F%8F%8B%EF%B8%8F%3C/text%3E%3C/svg%3E">
@@ -80,6 +80,16 @@
     @media (hover: none) and (pointer: coarse) {
       .x-delete { display: none; }
     }
+    /* Bottom-anchored UI rides above the on-screen keyboard. --kb is the
+       keyboard's occlusion of the layout viewport in px (kept up to date
+       from visualViewport below); it stays 0 where the keyboard resizes
+       the layout viewport instead (interactive-widget=resizes-content). */
+    .sheet { bottom: var(--kb, 0px); }
+    .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px)); }
+    .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px)); }
+    @media (prefers-reduced-motion: no-preference) {
+      .sheet, .kb-bottom-4, .kb-bottom-16 { transition: bottom 150ms ease-out; }
+    }
   </style>
 
   <!-- Theme bootstrap: apply the stored preference (light/dark/system,
@@ -97,11 +107,33 @@
     document.documentElement.classList.toggle('dark', dark);
   })();
   </script>
+
+  <!-- Keyboard inset: expose how much of the layout viewport the on-screen
+       keyboard covers as --kb (px). In environments where the keyboard
+       resizes the layout viewport this stays ~0 and everything degrades to
+       plain bottom-anchoring; where it overlays (iOS Safari / some
+       WebViews) bottom UI offsets itself by var(--kb). -->
+  <script>
+  (function () {
+    var vv = window.visualViewport;
+    if (!vv) return;
+    var raf = 0;
+    function update() {
+      raf = 0;
+      var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--kb', Math.round(kb) + 'px');
+    }
+    function schedule() { if (!raf) raf = requestAnimationFrame(update); }
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    update();
+  })();
+  </script>
 </head>
-<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-screen">
+<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-dvh">
   <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
-  <div id="undo-toast" class="hidden fixed bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
+  <div id="undo-toast" class="hidden fixed kb-bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
     <span id="undo-toast-msg"></span>
     <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
   </div>
@@ -123,7 +155,7 @@
     let importSheet = null;   // { text, error, busy } while the import sheet is open
     let exportSheet = null;   // { text, filename, count, copied } while the export sheet is open
     let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
-    let exerciseView = null;  // { data, metric, from } — per-exercise chart screen
+    let exerciseView = null;  // { data, metric, from, confirmDelete, deleting } — per-exercise chart screen
     let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
     let muscleEditor = null;  // { selected } while the muscle tag-edit sheet is open
     let bwEditor = null;      // truthy while the bodyweight sheet is open
@@ -131,7 +163,7 @@
     let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
-    let pendingDelete = null;    // { kind: 'session'|'entry'|'set', id, timer } — deferred swipe delete in its undo window
+    let pendingDelete = null;    // { kind: 'session'|'entry'|'set'|'hist', id, entryIds, timer } — deferred swipe delete in its undo window ('hist' = history row keyed by session id, deleting its entryIds)
     let suppressClicksUntil = 0; // swallows the click browsers synthesize right after a swipe's touchend
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
 
@@ -402,7 +434,7 @@
 
     function importSheetHtml() {
       return `<div data-action="close-import" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:85vh">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between">
             <div class="font-semibold">Import workouts</div>
             <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -438,7 +470,7 @@
 
     function pickerHtml() {
       return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:max(12rem, calc(75dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-2">
             <div class="font-semibold">Add exercise</div>
             <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -472,7 +504,7 @@
         <div>${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
         ${picker ? pickerHtml() : ''}
-        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
+        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed kb-bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
           <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
           <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
         </button>`;
@@ -610,7 +642,7 @@
 
     function bwEditorHtml() {
       return `<div data-action="close-bw-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Bodyweight</div>
             <button data-action="close-bw-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -850,7 +882,7 @@
     function muscleEditorHtml() {
       const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
       return `<div data-action="close-muscle-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Muscle groups</div>
             <button data-action="close-muscle-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -869,19 +901,28 @@
         ? d.muscles.map((m) => `<span class="px-2 py-0.5 rounded-full bg-violet-600/10 text-violet-700 dark:text-violet-300 text-xs">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
         : '<span class="text-xs italic text-zinc-400 dark:text-zinc-600">no muscle tags</span>';
       const editBtn = demo ? '' : '<button data-action="edit-muscles" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-1 shrink-0">Edit tags</button>';
+      // Hide a history row (and its chart point) while its delete sits in
+      // the undo window, mirroring the home / session lists.
+      const visibleSessions = d.sessions.filter((s) => !isPendingDelete('hist', s.session_id));
       let body;
       if (!d.sessions.length) {
         body = '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No sets logged yet — its history will appear here.</div>';
       } else {
-        const points = d.sessions
+        const points = visibleSessions
           .map((s) => ({ t: new Date(s.started_at).getTime(), v: sessionMetricValue(s.sets, metric) }))
           .filter((p) => p.v !== null);
         const wm = metric === 'maxw' || metric === 'vol' || metric === 'e1rm';
-        const hist = [...d.sessions].reverse().map((s) => `
-          <button data-action="open-session" data-id="${s.session_id}" class="w-full text-left px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60">
-            <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
-            <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
-          </button>`).join('');
+        const hist = [...visibleSessions].reverse().map((s) => `
+          <div class="relative rounded-lg overflow-hidden">
+            <div class="absolute inset-0 rounded-lg bg-red-500 dark:bg-red-600 flex items-center justify-end pr-4 text-white opacity-0" aria-hidden="true">🗑</div>
+            <div data-swipe="hist:${s.session_id}" class="relative flex items-stretch rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+              <button data-action="open-session" data-id="${s.session_id}" class="flex-1 text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
+                <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
+                <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
+              </button>
+              <button data-action="delete-history-entry" data-session="${s.session_id}" class="x-delete px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete this exercise from that workout">✕</button>
+            </div>
+          </div>`).join('');
         body = `
           ${metrics.length > 1 ? metricToggleHtml(metrics, metric) : ''}
           <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${METRIC_LABELS[metric]}${wm ? ' · ' + weightUnit : ''}</div>
@@ -889,17 +930,32 @@
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">History</div>
           <div class="space-y-1.5 pb-6">${hist}</div>`;
       }
+      // Whole-exercise delete: too destructive for the 5s undo window, so it
+      // uses an inline two-step confirm instead (blocking confirm() dialogs
+      // are suppressed in the platform iframe).
+      const delBlock = exerciseView.confirmDelete
+        ? `<div class="mt-2 mb-8 rounded-xl border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3">
+            <div class="text-sm text-red-700 dark:text-red-300">Delete “${esc(d.name)}” and its entire history${visibleSessions.length ? ` (${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'})` : ''}? This can’t be undone.</div>
+            <div class="flex gap-2 mt-2.5">
+              <button data-action="delete-exercise-confirm" ${exerciseView.deleting ? 'disabled' : ''} class="flex-1 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-medium">${exerciseView.deleting ? 'Deleting…' : 'Delete everything'}</button>
+              <button data-action="delete-exercise-cancel" class="px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-700/60 text-sm">Cancel</button>
+            </div>
+          </div>`
+        : `<div class="mt-2 mb-8 text-center">
+            <button data-action="delete-exercise" class="text-xs text-zinc-500 hover:text-red-600 dark:text-zinc-600 dark:hover:text-red-400 px-2 py-1">🗑 Delete exercise…</button>
+          </div>`;
       return `
         <header class="flex items-center gap-2 py-4">
           <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
           <div class="ml-1 flex-1 min-w-0">
             <div class="font-semibold truncate">${esc(d.name)}</div>
-            <div class="text-xs text-zinc-500">${d.sessions.length} workout${d.sessions.length === 1 ? '' : 's'}</div>
+            <div class="text-xs text-zinc-500">${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'}</div>
           </div>
           ${unitSwitcherHtml()}
         </header>
         <div class="flex items-center gap-1.5 flex-wrap mb-3">${typeBadgeHtml(d.exercise_type)}${tagChips}${editBtn}</div>
         ${body}
+        ${delBlock}
         ${muscleEditor ? muscleEditorHtml() : ''}`;
     }
 
@@ -1002,14 +1058,40 @@
       render();
     }
 
+    // Carry focus, caret, and in-progress text across the full innerHTML
+    // swap, so a background re-render (e.g. the undo window committing while
+    // the user is typing) doesn't slam the mobile keyboard shut.
+    function captureFocus() {
+      const el = document.activeElement;
+      if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'file' || !el.closest('#app')) return null;
+      const name = el.closest('#set-form') ? el.name : null;
+      if (!el.id && !name) return null;
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
+      return { id: el.id || null, name, value: el.value, start, end };
+    }
+    function restoreFocus(f) {
+      if (!f) return;
+      const el = f.id ? document.getElementById(f.id) : document.querySelector('#set-form [name="' + f.name + '"]');
+      if (!el) return;
+      // If wireInputs just focused a different edit surface, it wins.
+      const active = document.activeElement;
+      if (active && active !== el && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+      if (el.value !== f.value) el.value = f.value;
+      if (active !== el) el.focus({ preventScroll: true });
+      if (f.start !== null && el.setSelectionRange) { try { el.setSelectionRange(f.start, f.end); } catch (_) {} }
+    }
+
     function render() {
       const html = view === 'home' ? homeHtml()
         : view === 'session' ? sessionHtml()
         : view === 'progress' ? progressHtml()
         : view === 'exercise' ? exerciseChartHtml()
         : muscleChartHtml();
+      const focused = captureFocus();
       document.getElementById('app').innerHTML = html;
       wireInputs();
+      restoreFocus(focused);
       tick();
     }
 
@@ -1020,11 +1102,15 @@
         // Auto-focus only a blank form — focusing a pre-filled one pops the
         // mobile keyboard over values the user may just want to log as-is.
         const first = form.querySelector('input');
-        if (first && !first.value) first.focus();
+        if (first && !first.value) {
+          first.focus({ preventScroll: true });
+          first.scrollIntoView({ block: 'nearest' });
+        }
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
-        ni.focus();
+        ni.focus({ preventScroll: true });
+        ni.scrollIntoView({ block: 'nearest' });
         ni.setSelectionRange(ni.value.length, ni.value.length);
         ni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); ni.blur(); }
@@ -1043,7 +1129,8 @@
       }
       const sni = document.getElementById('session-note-input');
       if (sni) {
-        sni.focus();
+        sni.focus({ preventScroll: true });
+        sni.scrollIntoView({ block: 'nearest' });
         sni.setSelectionRange(sni.value.length, sni.value.length);
         sni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); sni.blur(); }
@@ -1081,7 +1168,7 @@
         const si = document.getElementById('picker-search');
         si.value = picker.query;
         si.addEventListener('input', () => { picker.query = si.value; picker.creating = null; renderPickerList(); });
-        si.focus();
+        si.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         renderPickerList();
       }
       if (view === 'progress' && progressHub) {
@@ -1097,7 +1184,7 @@
         const bi = document.getElementById('bw-input');
         if (bi) {
           if (bodyweightKg) bi.value = String(kgToUnitNum(bodyweightKg));
-          bi.focus();
+          bi.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         }
       }
     }
@@ -1356,7 +1443,7 @@
         } else {
           await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
           stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
-          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, weightKg: body.weight ?? null, note: '', drop: false }, error: '' };
+          openForm = null; // close on success; the next "+ Add set" prefills from this set
         }
         await refreshSession();
       } catch (err) {
@@ -1375,6 +1462,21 @@
     async function refreshSession() {
       try {
         session = await api('GET', '/api/sessions/' + session.id);
+        render();
+      } catch (err) {
+        toast(err.message);
+        await loadHome();
+      }
+    }
+    // Reload the exercise chart screen in place (after a history-row delete),
+    // keeping the selected metric when it still applies.
+    async function refreshExerciseView() {
+      if (!exerciseView) return;
+      try {
+        const data = await api('GET', '/api/exercises/' + exerciseView.data.id + '/history');
+        exerciseView.data = data;
+        const metrics = exerciseMetrics(data);
+        if (!metrics.includes(exerciseView.metric)) exerciseView.metric = metrics[0] || 'maxw';
         render();
       } catch (err) {
         toast(err.message);
@@ -1419,15 +1521,19 @@
     // Deferred delete: the row is hidden immediately, but the DELETE request
     // is only sent when the 5s undo window closes — Undo is a pure
     // client-side restore, nothing to recreate server-side.
-    const DELETE_LABELS = { session: 'Workout deleted', entry: 'Exercise removed', set: 'Set deleted' };
+    const DELETE_LABELS = { session: 'Workout deleted', entry: 'Exercise removed', set: 'Set deleted', hist: 'Removed from that workout' };
 
     function isPendingDelete(kind, id) {
       return !!pendingDelete && pendingDelete.kind === kind && pendingDelete.id === id;
     }
-    function deleteUrlFor(kind, id) {
-      if (kind === 'session') return '/api/sessions/' + id;
-      if (kind === 'entry') return '/api/session-exercises/' + id;
-      return '/api/sets/' + id;
+    // 'hist' rows (exercise history) key on the session id but delete the
+    // underlying entry rows — usually one, more if the exercise was added to
+    // that workout twice.
+    function deleteUrlsFor(pd) {
+      if (pd.kind === 'session') return ['/api/sessions/' + pd.id];
+      if (pd.kind === 'entry') return ['/api/session-exercises/' + pd.id];
+      if (pd.kind === 'hist') return (pd.entryIds || []).map((id) => '/api/session-exercises/' + id);
+      return ['/api/sets/' + pd.id];
     }
     function showUndoToast(msg) {
       document.getElementById('undo-toast-msg').textContent = msg;
@@ -1437,8 +1543,16 @@
       document.getElementById('undo-toast').classList.add('hidden');
     }
     function startPendingDelete(kind, id) {
+      // Resolve the entry ids up front — the commit may fire after the view
+      // (and exerciseView with it) has moved on.
+      let entryIds = null;
+      if (kind === 'hist') {
+        const s = exerciseView && exerciseView.data.sessions.find((x) => x.session_id === id);
+        entryIds = s ? s.entry_ids : [];
+        if (!entryIds.length) return;
+      }
       flushPendingDelete().catch((err) => toast(err.message)); // a new swipe commits the previous pending delete right away
-      pendingDelete = { kind, id, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000) };
+      pendingDelete = { kind, id, entryIds, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000) };
       render();
       showUndoToast(DELETE_LABELS[kind]);
     }
@@ -1459,7 +1573,7 @@
       if (openForm && ((pd.kind === 'entry' && openForm.entryId === pd.id) || (pd.kind === 'set' && openForm.setId === pd.id))) openForm = null;
       let failed = false;
       try {
-        await api('DELETE', deleteUrlFor(pd.kind, pd.id));
+        for (const url of deleteUrlsFor(pd)) await api('DELETE', url);
       } catch (err) {
         failed = true;
         toast(err.message);
@@ -1468,7 +1582,9 @@
         // carry in-progress set-form typing across the re-render
         const form = document.getElementById('set-form');
         if (form && openForm) openForm.draft = readDraft(form);
-        if (view === 'home' || !session) await loadHome(); else await refreshSession();
+        if (view === 'exercise' && exerciseView) await refreshExerciseView();
+        else if (view === 'home' || !session) await loadHome();
+        else await refreshSession();
       }
     }
     function flushPendingDelete() {
@@ -1482,14 +1598,18 @@
       clearTimeout(pd.timer);
       hideUndoToast();
       needsRefreshOnShow = true;
-      try { fetch(deleteUrlFor(pd.kind, pd.id), { method: 'DELETE', headers: authHeaders, keepalive: true }); } catch (_) {}
+      try {
+        for (const url of deleteUrlsFor(pd)) fetch(url, { method: 'DELETE', headers: authHeaders, keepalive: true });
+      } catch (_) {}
     }
     window.addEventListener('pagehide', flushPendingDeleteKeepalive);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') flushPendingDeleteKeepalive();
       else if (needsRefreshOnShow) {
         needsRefreshOnShow = false;
-        (view === 'home' || !session ? loadHome() : refreshSession()).catch((err) => toast(err.message));
+        (view === 'exercise' && exerciseView ? refreshExerciseView()
+          : view === 'home' || !session ? loadHome()
+          : refreshSession()).catch((err) => toast(err.message));
       }
     });
 
@@ -1590,7 +1710,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -1715,6 +1835,34 @@
         case 'delete-entry':
           startPendingDelete('entry', +el.dataset.entry);
           break;
+        case 'delete-history-entry':
+          // Same undo-window confirmation as the other deletes (blocking
+          // confirm() dialogs are suppressed in the platform iframe).
+          startPendingDelete('hist', +el.dataset.session);
+          break;
+        case 'delete-exercise':
+          exerciseView.confirmDelete = true;
+          render();
+          break;
+        case 'delete-exercise-cancel':
+          exerciseView.confirmDelete = false;
+          render();
+          break;
+        case 'delete-exercise-confirm': {
+          if (exerciseView.deleting) break;
+          exerciseView.deleting = true;
+          render();
+          try {
+            await api('DELETE', '/api/exercises/' + exerciseView.data.id);
+          } catch (err) {
+            exerciseView.deleting = false;
+            render();
+            throw err;
+          }
+          toast('Exercise deleted', true);
+          await openProgress();
+          break;
+        }
         case 'add-note':
           editingNote = +el.dataset.entry;
           render();
