@@ -1383,7 +1383,7 @@
         } else {
           await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
           stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
-          openForm = { entryId: openForm.entryId, setId: null, draft: { ...d, weightKg: body.weight ?? null, note: '', drop: false }, error: '' };
+          openForm = null; // close on success; the next "+ Add set" prefills from this set
         }
         await refreshSession();
       } catch (err) {
