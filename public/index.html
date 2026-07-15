@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <!-- Inline data-URI favicon: prevents the browser's automatic /favicon.ico
        request (which would hit the auth-gated catch-all and 401). -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%237c3aed'/%3E%3Ctext%20x='32'%20y='34'%20font-size='34'%20text-anchor='middle'%20dominant-baseline='central'%3E%F0%9F%8F%8B%EF%B8%8F%3C/text%3E%3C/svg%3E">
@@ -80,6 +80,16 @@
     @media (hover: none) and (pointer: coarse) {
       .x-delete { display: none; }
     }
+    /* Bottom-anchored UI rides above the on-screen keyboard. --kb is the
+       keyboard's occlusion of the layout viewport in px (kept up to date
+       from visualViewport below); it stays 0 where the keyboard resizes
+       the layout viewport instead (interactive-widget=resizes-content). */
+    .sheet { bottom: var(--kb, 0px); }
+    .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px)); }
+    .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px)); }
+    @media (prefers-reduced-motion: no-preference) {
+      .sheet, .kb-bottom-4, .kb-bottom-16 { transition: bottom 150ms ease-out; }
+    }
   </style>
 
   <!-- Theme bootstrap: apply the stored preference (light/dark/system,
@@ -97,11 +107,33 @@
     document.documentElement.classList.toggle('dark', dark);
   })();
   </script>
+
+  <!-- Keyboard inset: expose how much of the layout viewport the on-screen
+       keyboard covers as --kb (px). In environments where the keyboard
+       resizes the layout viewport this stays ~0 and everything degrades to
+       plain bottom-anchoring; where it overlays (iOS Safari / some
+       WebViews) bottom UI offsets itself by var(--kb). -->
+  <script>
+  (function () {
+    var vv = window.visualViewport;
+    if (!vv) return;
+    var raf = 0;
+    function update() {
+      raf = 0;
+      var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--kb', Math.round(kb) + 'px');
+    }
+    function schedule() { if (!raf) raf = requestAnimationFrame(update); }
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    update();
+  })();
+  </script>
 </head>
-<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-screen">
+<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-dvh">
   <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
-  <div id="undo-toast" class="hidden fixed bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
+  <div id="undo-toast" class="hidden fixed kb-bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
     <span id="undo-toast-msg"></span>
     <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
   </div>
@@ -319,8 +351,9 @@
     }
 
     function setFormHtml() {
+      // No type toggle here: the fields' shape is fixed by the exercise's
+      // type (or, when editing a legacy mismatched set, by the set's own).
       const d = openForm.draft;
-      const seg = (t, label) => `<button type="button" data-action="form-type" data-type="${t}" class="flex-1 py-1.5 rounded-lg text-sm transition-colors ${d.type === t ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
       const fields = d.type === 'reps'
         ? `<div class="flex gap-2 mt-2">
              <input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">
@@ -341,7 +374,6 @@
       const showDrop = pos > 0 || d.drop;
       const sideBtn = (v, label) => `<button type="button" data-action="form-side" data-side="${v}" class="flex-1 py-1 rounded-lg text-xs transition-colors ${(d.side || '') === v ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
       return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-100 dark:bg-zinc-800/70 border border-zinc-200 dark:border-zinc-700 p-2.5">
-        <div class="flex gap-1.5">${seg('reps', 'Reps × Weight')}${seg('time', 'Time × Effort')}</div>
         ${fields}
         <div class="flex items-center gap-2 mt-2">
           <div class="flex gap-1 flex-1">${sideBtn('', 'Both')}${sideBtn('left', 'L')}${sideBtn('right', 'R')}</div>
@@ -401,7 +433,7 @@
 
     function importSheetHtml() {
       return `<div data-action="close-import" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:85vh">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between">
             <div class="font-semibold">Import workouts</div>
             <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -421,7 +453,7 @@
 
     function pickerHtml() {
       return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:75vh">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:max(12rem, calc(75dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-2">
             <div class="font-semibold">Add exercise</div>
             <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -455,10 +487,17 @@
         <div>${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
         ${picker ? pickerHtml() : ''}
-        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
+        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed kb-bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
           <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
           <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
         </button>`;
+    }
+
+    // Small "reps"/"time" chip shown wherever an exercise's fixed type helps
+    // (picker rows, chart header). data-ex-type doubles as the test hook.
+    function typeBadgeHtml(t) {
+      const v = t === 'time' ? 'time' : 'reps';
+      return `<span data-ex-type="${v}" class="shrink-0 px-1.5 py-0.5 rounded-full bg-zinc-200/70 dark:bg-zinc-800 text-[10px] text-zinc-500 dark:text-zinc-400">${v}</span>`;
     }
 
     function renderPickerList() {
@@ -468,8 +507,19 @@
       const ql = q.toLowerCase();
       const items = picker.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
       const exact = picker.list.some((x) => x.name.toLowerCase() === ql);
-      let html = items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">${esc(x.name)}</button>`).join('');
-      if (q && !exact) html += `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-violet-600 dark:text-violet-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
+      let html = items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
+      if (q && !exact) {
+        // Creating is a two-step choice: the type is picked once, here, and
+        // can never be changed afterward — so there's no pre-selected default.
+        const typeBtn = (t, label) => `<button data-action="create-exercise-typed" data-type="${t}" class="flex-1 py-2 rounded-lg text-sm bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 hover:bg-violet-600 hover:text-white dark:hover:bg-violet-600">${label}</button>`;
+        html += picker.creating === q
+          ? `<div class="px-3 py-2.5 rounded-lg bg-zinc-100 dark:bg-zinc-800/40">
+               <div class="text-sm mb-0.5">Create “${esc(q)}” as:</div>
+               <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-2">This choice is permanent for the exercise.</div>
+               <div class="flex gap-1.5">${typeBtn('reps', 'Reps × Weight')}${typeBtn('time', 'Time × Effort')}</div>
+             </div>`
+          : `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-violet-600 dark:text-violet-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
+      }
       if (!html) html = '<div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">Type a name to create your first exercise</div>';
       box.innerHTML = html;
     }
@@ -575,7 +625,7 @@
 
     function bwEditorHtml() {
       return `<div data-action="close-bw-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Bodyweight</div>
             <button data-action="close-bw-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -815,7 +865,7 @@
     function muscleEditorHtml() {
       const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
       return `<div data-action="close-muscle-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Muscle groups</div>
             <button data-action="close-muscle-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
@@ -886,7 +936,7 @@
           </div>
           ${unitSwitcherHtml()}
         </header>
-        <div class="flex items-center gap-1.5 flex-wrap mb-3">${tagChips}${editBtn}</div>
+        <div class="flex items-center gap-1.5 flex-wrap mb-3">${typeBadgeHtml(d.exercise_type)}${tagChips}${editBtn}</div>
         ${body}
         ${delBlock}
         ${muscleEditor ? muscleEditorHtml() : ''}`;
@@ -991,14 +1041,40 @@
       render();
     }
 
+    // Carry focus, caret, and in-progress text across the full innerHTML
+    // swap, so a background re-render (e.g. the undo window committing while
+    // the user is typing) doesn't slam the mobile keyboard shut.
+    function captureFocus() {
+      const el = document.activeElement;
+      if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'file' || !el.closest('#app')) return null;
+      const name = el.closest('#set-form') ? el.name : null;
+      if (!el.id && !name) return null;
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
+      return { id: el.id || null, name, value: el.value, start, end };
+    }
+    function restoreFocus(f) {
+      if (!f) return;
+      const el = f.id ? document.getElementById(f.id) : document.querySelector('#set-form [name="' + f.name + '"]');
+      if (!el) return;
+      // If wireInputs just focused a different edit surface, it wins.
+      const active = document.activeElement;
+      if (active && active !== el && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+      if (el.value !== f.value) el.value = f.value;
+      if (active !== el) el.focus({ preventScroll: true });
+      if (f.start !== null && el.setSelectionRange) { try { el.setSelectionRange(f.start, f.end); } catch (_) {} }
+    }
+
     function render() {
       const html = view === 'home' ? homeHtml()
         : view === 'session' ? sessionHtml()
         : view === 'progress' ? progressHtml()
         : view === 'exercise' ? exerciseChartHtml()
         : muscleChartHtml();
+      const focused = captureFocus();
       document.getElementById('app').innerHTML = html;
       wireInputs();
+      restoreFocus(focused);
       tick();
     }
 
@@ -1009,11 +1085,15 @@
         // Auto-focus only a blank form — focusing a pre-filled one pops the
         // mobile keyboard over values the user may just want to log as-is.
         const first = form.querySelector('input');
-        if (first && !first.value) first.focus();
+        if (first && !first.value) {
+          first.focus({ preventScroll: true });
+          first.scrollIntoView({ block: 'nearest' });
+        }
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
-        ni.focus();
+        ni.focus({ preventScroll: true });
+        ni.scrollIntoView({ block: 'nearest' });
         ni.setSelectionRange(ni.value.length, ni.value.length);
         ni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); ni.blur(); }
@@ -1032,7 +1112,8 @@
       }
       const sni = document.getElementById('session-note-input');
       if (sni) {
-        sni.focus();
+        sni.focus({ preventScroll: true });
+        sni.scrollIntoView({ block: 'nearest' });
         sni.setSelectionRange(sni.value.length, sni.value.length);
         sni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); sni.blur(); }
@@ -1069,8 +1150,8 @@
       if (picker) {
         const si = document.getElementById('picker-search');
         si.value = picker.query;
-        si.addEventListener('input', () => { picker.query = si.value; renderPickerList(); });
-        si.focus();
+        si.addEventListener('input', () => { picker.query = si.value; picker.creating = null; renderPickerList(); });
+        si.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         renderPickerList();
       }
       if (view === 'progress' && progressHub) {
@@ -1086,7 +1167,7 @@
         const bi = document.getElementById('bw-input');
         if (bi) {
           if (bodyweightKg) bi.value = String(kgToUnitNum(bodyweightKg));
-          bi.focus();
+          bi.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         }
       }
     }
@@ -1131,6 +1212,12 @@
       '          Matched case-insensitively against the user\'s existing exercises and',
       '          created on demand — "Bench Press" and "bench press" are the same',
       '          exercise. Use one consistent spelling per movement so history links up.',
+      '  "type"  optional "reps" | "time" — the exercise\'s fixed logging type. Every',
+      '          exercise is permanently either rep-based or time-based, chosen when',
+      '          it is created. The field is only consulted when the import has to',
+      '          CREATE the exercise (an existing exercise keeps its type); when',
+      '          omitted, the type is inferred from the exercise\'s sets across the',
+      '          whole file (majority wins; tie or no sets → "reps").',
       '  "note"  optional string or null, max 500 chars. Put qualifiers like assisted',
       '          reps or band assistance here — there are no dedicated fields for them.',
       '  "sets"  optional array of Set (default []). Order is preserved and meaningful',
@@ -1263,14 +1350,24 @@
         note: st.note || '',
       };
     }
+    function lastSetOfType(sets, type) {
+      for (let i = sets.length - 1; i >= 0; i--) {
+        if (sets[i].set_type === type) return sets[i];
+      }
+      return null;
+    }
     function prefillDraft(entryId) {
       const en = findEntryLocal(entryId);
-      const src = (en.sets.length && en.sets[en.sets.length - 1]) ||
-        (en.last_time && en.last_time.sets.length && en.last_time.sets[en.last_time.sets.length - 1]);
+      // New sets always take the exercise's fixed type, so prefill only from
+      // the most recent set of that type — a legacy mismatched set must not
+      // drag the form to the wrong shape.
+      const type = en.exercise_type === 'time' ? 'time' : 'reps';
+      const src = lastSetOfType(en.sets, type) ||
+        (en.last_time ? lastSetOfType(en.last_time.sets, type) : null);
       // Side carries over (log left, flip one toggle to log right); note and
       // the drop flag always start fresh.
       if (src) { const d = draftFromSet(src); d.note = ''; d.drop = false; return d; }
-      return { type: 'reps', reps: '', weight: '', weightKg: null, duration: '', effort: '', side: '', drop: false, note: '' };
+      return { type, reps: '', weight: '', weightKg: null, duration: '', effort: '', side: '', drop: false, note: '' };
     }
     function readDraft(form) {
       const g = (n) => { const i = form.querySelector('[name="' + n + '"]'); return i ? i.value : ''; };
@@ -1289,7 +1386,9 @@
       const d = readDraft(e.target);
       openForm.draft = d;
       await flushPendingDelete();
-      const body = { set_type: d.type, side: d.side || null, is_drop: !!d.drop, note: d.note };
+      // No set_type: the server derives it from the exercise on create and
+      // locks it to the existing shape on edit.
+      const body = { side: d.side || null, is_drop: !!d.drop, note: d.note };
       if (d.type === 'reps') {
         if (d.reps.trim() === '') { openForm.error = 'Enter reps'; return render(); }
         if (d.weight.trim() === '') { openForm.error = 'Enter weight (0 for bodyweight)'; return render(); }
@@ -1574,7 +1673,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     async function handle(action, el) {
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
@@ -1685,9 +1784,14 @@
         case 'pick-exercise':
           await addExercise(+el.dataset.id);
           break;
-        case 'create-exercise': {
-          const name = picker.query.trim();
-          const ex = await api('POST', '/api/exercises', { name });
+        case 'create-exercise':
+          // Step 1 of creating: reveal the reps/time choice (no write yet).
+          picker.creating = picker.query.trim();
+          renderPickerList();
+          break;
+        case 'create-exercise-typed': {
+          const name = picker.creating || picker.query.trim();
+          const ex = await api('POST', '/api/exercises', { name, exercise_type: el.dataset.type });
           await addExercise(ex.id);
           break;
         }
@@ -1746,14 +1850,6 @@
           openForm = null;
           await refreshSession();
           break;
-        case 'form-type': {
-          const form = document.getElementById('set-form');
-          if (form) openForm.draft = readDraft(form);
-          openForm.draft.type = el.dataset.type;
-          openForm.error = '';
-          render();
-          break;
-        }
         case 'form-side': {
           const form = document.getElementById('set-form');
           if (form) openForm.draft = readDraft(form);
