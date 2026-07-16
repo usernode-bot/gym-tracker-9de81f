@@ -149,6 +149,7 @@
     let sessions = [];        // home list
     let session = null;       // session detail payload
     let picker = null;        // { query, list } when the add-exercise sheet is open
+    let exCatalog = null;     // standardized exercise catalog (fetched once, static)
     let openForm = null;      // { entryId, setId|null, draft, error } for the set form
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
@@ -517,6 +518,39 @@
       return `<span data-ex-type="${v}" class="shrink-0 px-1.5 py-0.5 rounded-full bg-zinc-200/70 dark:bg-zinc-800 text-[10px] text-zinc-500 dark:text-zinc-400">${v}</span>`;
     }
 
+    // Same normalization as the server's exercise-catalog.js: lowercase,
+    // punctuation collapsed to spaces, so "t bar row" matches "T-Bar Row".
+    function normName(s) {
+      return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    // Catalog entries matching the query by canonical name OR alias, prefix
+    // matches first. Entries whose canonical name the user already has are
+    // dropped — that exercise shows in their own list instead.
+    function catalogMatches(nq) {
+      if (!nq || !exCatalog) return [];
+      const have = new Set(picker.list.map((x) => normName(x.name)));
+      const out = [];
+      for (const e of exCatalog) {
+        const cn = normName(e.name);
+        if (have.has(cn)) continue;
+        let rank = null;
+        let via = null;
+        if (cn.startsWith(nq)) rank = 0;
+        else if (cn.includes(nq)) rank = 1;
+        else {
+          for (const a of e.aliases || []) {
+            const an = normName(a);
+            if (an.startsWith(nq)) { rank = 2; via = a; break; }
+            if (an.includes(nq) && rank === null) { rank = 3; via = a; }
+          }
+        }
+        if (rank !== null) out.push({ e, rank, via });
+      }
+      out.sort((a, b) => a.rank - b.rank || a.e.name.localeCompare(b.e.name));
+      return out.slice(0, 6);
+    }
+
     function renderPickerList() {
       const box = document.getElementById('picker-list');
       if (!box || !picker) return;
@@ -524,7 +558,21 @@
       const ql = q.toLowerCase();
       const items = picker.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
       const exact = picker.list.some((x) => x.name.toLowerCase() === ql);
-      let html = items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
+      // Standardized catalog suggestions go FIRST: one tap creates the
+      // exercise under its canonical name with the catalog's type and muscle
+      // tags. Alias hits show what they matched ("aka …").
+      const suggested = catalogMatches(normName(q));
+      let html = suggested.length
+        ? `<div class="px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-widest text-zinc-500 dark:text-zinc-600">Suggested</div>` +
+          suggested.map(({ e, via }) => {
+            const sub = via ? `aka ${esc(via)}` : esc((e.muscles || []).join(' · '));
+            return `<button data-action="pick-suggested" data-name="${esc(e.name)}" data-type="${e.type}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">
+              <span class="min-w-0"><span class="block truncate">${esc(e.name)}</span>${sub ? `<span class="block truncate text-[11px] text-zinc-500 dark:text-zinc-500">${sub}</span>` : ''}</span>
+              ${typeBadgeHtml(e.type)}</button>`;
+          }).join('') +
+          (items.length ? `<div class="px-3 pt-2 pb-0.5 text-[10px] uppercase tracking-widest text-zinc-500 dark:text-zinc-600">Your exercises</div>` : '')
+        : '';
+      html += items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
       if (q && !exact) {
         // Creating is a two-step choice: the type is picked once, here, and
         // can never be changed afterward — so there's no pre-selected default.
@@ -1810,7 +1858,13 @@
         case 'open-picker': {
           picker = { query: '', list: [] };
           render();
-          const list = (await api('GET', '/api/exercises')).exercises;
+          // The static catalog loads once per page; a failure just means no
+          // "Suggested" section — the user's own list still works.
+          const [list, cat] = await Promise.all([
+            api('GET', '/api/exercises').then((r) => r.exercises),
+            exCatalog ? Promise.resolve(exCatalog) : api('GET', '/api/exercise-catalog').then((r) => r.exercises).catch(() => []),
+          ]);
+          exCatalog = cat;
           if (picker) { picker.list = list; renderPickerList(); }
           break;
         }
@@ -1829,6 +1883,13 @@
         case 'create-exercise-typed': {
           const name = picker.creating || picker.query.trim();
           const ex = await api('POST', '/api/exercises', { name, exercise_type: el.dataset.type });
+          await addExercise(ex.id);
+          break;
+        }
+        case 'pick-suggested': {
+          // Catalog suggestion: create-or-get under the canonical name; the
+          // catalog's type and muscle tags apply only on a fresh insert.
+          const ex = await api('POST', '/api/exercises', { name: el.dataset.name, exercise_type: el.dataset.type });
           await addExercise(ex.id);
           break;
         }
@@ -2013,7 +2074,18 @@
       if (deepSession) {
         try {
           await openSession(deepSession);
-          if (params.get('picker') === '1') await handle('open-picker', null);
+          if (params.get('picker') === '1') {
+            await handle('open-picker', null);
+            // &pickerq=<text> pre-fills the picker search — lets the
+            // proposal checks exercise the catalog autocomplete.
+            const pq = params.get('pickerq');
+            if (pq && picker) {
+              picker.query = pq;
+              const si = document.getElementById('picker-search');
+              if (si) si.value = pq;
+              renderPickerList();
+            }
+          }
           return;
         } catch (_) {} // unknown/foreign session — fall through to home
       }

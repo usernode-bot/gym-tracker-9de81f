@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
+const { CATALOG, MUSCLE_SLUGS, findCatalogEntry } = require('./exercise-catalog');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -72,15 +73,17 @@ function cleanNote(v) {
 
 // ---------- Muscle groups ----------
 
-// Canonical muscle-group slugs. exercises.muscles is TEXT[] of these;
-// NULL means "never auto-suggested" (pre-feature rows, backfilled at boot),
-// while an array — even empty — means the suggestion ran or the user edited
-// the tags, so it is never overwritten automatically.
-const MUSCLE_SLUGS = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'quads', 'hamstrings', 'glutes', 'calves', 'core', 'forearms'];
+// Canonical muscle-group slugs live in exercise-catalog.js (imported above).
+// exercises.muscles is TEXT[] of these; NULL means "never auto-suggested"
+// (pre-feature rows, backfilled at boot), while an array — even empty —
+// means the suggestion ran or the user edited the tags, so it is never
+// overwritten automatically.
 
-// Ordered keyword rules matched against the lowercased exercise name;
-// FIRST matching rule wins (specific before generic — "leg curl" before
-// "curl"). No match → empty suggestion.
+// Ordered keyword rules matched against the lowercased exercise name —
+// the FALLBACK when the name isn't in the standardized catalog (an exact
+// catalog name/alias hit wins, see suggestMuscles). FIRST matching rule
+// wins (specific before generic — "leg curl" before "curl"). No match →
+// empty suggestion.
 const MUSCLE_RULES = [
   [/leg curl|hamstring/, ['hamstrings']],
   [/\brdl\b|romanian|good morning|deadlift/, ['hamstrings', 'glutes', 'back']],
@@ -98,6 +101,8 @@ const MUSCLE_RULES = [
 ];
 
 function suggestMuscles(name) {
+  const hit = findCatalogEntry(name);
+  if (hit) return hit.muscles;
   const n = String(name || '').toLowerCase();
   for (const [re, muscles] of MUSCLE_RULES) {
     if (re.test(n)) return muscles;
@@ -327,6 +332,15 @@ app.get('/api/exercises', wrap(async (req, res) => {
     [uid, pattern]
   );
   res.json({ exercises: rows.map((r) => ({ ...r, muscles: r.muscles || [] })) });
+}));
+
+// The standardized default exercise database (issue #18): canonical names +
+// muscle tags + aliases. Static and user-independent — the picker fetches it
+// once and matches queries client-side (aliases included) so canonical names
+// autocomplete first while free-form custom names stay allowed.
+app.get('/api/exercise-catalog', wrap(async (_req, res) => {
+  res.set('Cache-Control', 'private, max-age=3600');
+  res.json({ exercises: CATALOG });
 }));
 
 app.post('/api/exercises', wrap(async (req, res) => {
