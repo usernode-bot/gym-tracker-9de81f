@@ -64,9 +64,23 @@ view. All workout data is strictly private per user.
   parent FK. Both survive a reps↔time flip in `buildSetValues`.
   Assisted reps / band assistance go in the freeform `note` fields
   (sets, entries, and `workout_sessions.note`), not new columns.
-- **Exercises are per-user** (no shared catalog), deduped
+- **Exercises are per-user** (no shared catalog *table*), deduped
   case-insensitively via a unique index on `(user_id, lower(name))`.
   `POST /api/exercises` is create-or-get, never a duplicate error.
+- **Standardized exercise database** (`exercise-catalog.js`, issue
+  #18): a static, code-only catalog of ~120 canonical exercise names
+  with muscle tags, default reps/time type, and aliases. Served via
+  `GET /api/exercise-catalog`; the picker suggests catalog matches
+  first ("Suggested" section, matching aliases too — "t bar row" →
+  "T-Bar Row", "barbell ohp" → "Barbell Overhead Press") while
+  free-form names remain allowed. `suggestMuscles` prefers an exact
+  catalog name/alias hit over the keyword rules. It never renames
+  logged data — picking a suggestion just create-or-gets the
+  canonical name for that user. `MUSCLE_SLUGS` now lives in this
+  module (server.js imports it). Matching normalizes punctuation to
+  spaces, so aliases only cover genuinely different wordings.
+  `&pickerq=<text>` (with `&picker=1`) pre-fills the picker search
+  for the dapp.json autocomplete tests.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't
