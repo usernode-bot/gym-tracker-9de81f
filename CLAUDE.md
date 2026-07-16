@@ -81,6 +81,17 @@ view. All workout data is strictly private per user.
   spaces, so aliases only cover genuinely different wordings.
   `&pickerq=<text>` (with `&picker=1`) pre-fills the picker search
   for the dapp.json autocomplete tests.
+- **Training-frequency ("growth") indicator** (issue #26): computed
+  client-side over the `/api/muscles/summary` and muscle-history
+  payloads — no schema, no server aggregation. Rolling 28-day window,
+  avg sets/week per muscle, thresholds `[4, 10)`: ≥10 = "On track",
+  4–9 = "Maintaining", >0 = "Low", 0 = "Not trained". Every set shape
+  counts (time and weight-0 sets included — unlike strength levels,
+  no bodyweight needed). Shown **alongside** strength levels, never
+  replacing them: the Progress hub body map has a Strength/Frequency
+  toggle (`&freq=1` with `&progress=1` pre-selects Frequency for the
+  dapp.json checks), and the muscle drill-in carries a status line +
+  a dashed 10 sets/wk guideline on its weekly-sets chart.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't

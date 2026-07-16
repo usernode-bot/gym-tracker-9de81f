@@ -300,6 +300,45 @@
       'bg-violet-800 dark:bg-violet-300',
     ];
 
+    // Training-frequency ("growth") states: avg sets/week per muscle over a
+    // rolling 4-week window, all set shapes counted. Thresholds follow the
+    // common hypertrophy guidance of ~10+ weekly sets for growth; 4–9 holds
+    // or slowly builds. States: 0 = Not trained, 1 = Low, 2 = Maintaining,
+    // 3 = On track. Needs no bodyweight, unlike the strength levels.
+    const FREQ_WINDOW_DAYS = 28;
+    const FREQ_WINDOW_MS = FREQ_WINDOW_DAYS * 24 * 3600 * 1000;
+    const FREQ_THRESHOLDS = [4, 10]; // sets/week: [maintaining, on-track]
+    const FREQ_LABELS = ['Not trained', 'Low', 'Maintaining', 'On track'];
+    // Emerald single-hue ramp (state 0 stays neutral zinc, like unrated
+    // muscles in strength mode); dark mode inverts lightness so
+    // "deeper = more trained" reads on both themes.
+    const FREQ_FILLS = [
+      'fill-zinc-400 dark:fill-zinc-600',
+      'fill-emerald-300 dark:fill-emerald-900',
+      'fill-emerald-500 dark:fill-emerald-700',
+      'fill-emerald-700 dark:fill-emerald-500',
+    ];
+    const FREQ_DOTS = [
+      'bg-zinc-300 dark:bg-zinc-700',
+      'bg-emerald-300 dark:bg-emerald-900',
+      'bg-emerald-500 dark:bg-emerald-700',
+      'bg-emerald-700 dark:bg-emerald-500',
+    ];
+    // Pill badge for the drill-in status line, one entry per state (mirrors
+    // the violet level badge's tinted-pill style).
+    const FREQ_BADGES = [
+      'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400',
+      'bg-emerald-600/10 text-emerald-700 dark:text-emerald-300',
+      'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300',
+      'bg-emerald-600/25 text-emerald-800 dark:text-emerald-200',
+    ];
+
+    function freqState(setsPerWeek) {
+      return setsPerWeek >= FREQ_THRESHOLDS[1] ? 3
+        : setsPerWeek >= FREQ_THRESHOLDS[0] ? 2
+        : setsPerWeek > 0 ? 1 : 0;
+    }
+
     function strengthLevel(muscle, scoreKg, bwKg) {
       const th = STRENGTH_THRESHOLDS[muscle];
       if (!th || !(scoreKg > 0) || !(bwKg > 0)) return null;
@@ -591,16 +630,35 @@
 
     // ---------- progress views ----------
 
+    // Active body-map mode: 'strength' (violet level tint) or 'freq'
+    // (emerald 28-day training-frequency tint).
+    function mapMode() {
+      return (progressHub && progressHub.mode) || 'strength';
+    }
+
+    // The active mode's { fill, dot, label } for a muscle, or null when the
+    // muscle has no rating in that mode (strength: no score / no bodyweight;
+    // freq: summary fetch not landed).
+    function hubTint(slug) {
+      if (mapMode() === 'freq') {
+        const f = hubFreq(slug);
+        return f ? { fill: FREQ_FILLS[f.state], dot: FREQ_DOTS[f.state], label: f.label } : null;
+      }
+      const lv = hubLevel(slug);
+      return lv ? { fill: LEVEL_FILLS[lv.level], dot: LEVEL_DOTS[lv.level], label: lv.label } : null;
+    }
+
     // One clickable muscle region: shapes inherit the group's fill so hover /
     // theming lives in one class list. <g> works with the delegated click
-    // handler (closest()/dataset work on SVG elements). Rated muscles (score
-    // + bodyweight known) tint by strength level; the rest keep neutral zinc.
+    // handler (closest()/dataset work on SVG elements). Rated muscles tint by
+    // the active mode (strength level or training frequency); the rest keep
+    // neutral zinc.
     function bodyRegion(slug, shapes) {
-      const lv = hubLevel(slug);
-      const cls = lv
-        ? `cursor-pointer ${LEVEL_FILLS[lv.level]} hover:opacity-70 transition-opacity`
+      const t = hubTint(slug);
+      const cls = t
+        ? `cursor-pointer ${t.fill} hover:opacity-70 transition-opacity`
         : 'cursor-pointer fill-zinc-400 dark:fill-zinc-600 hover:fill-violet-500 dark:hover:fill-violet-500 transition-colors';
-      const title = MUSCLE_LABELS[slug] + (lv ? ' — ' + lv.label : '');
+      const title = MUSCLE_LABELS[slug] + (t ? ' — ' + t.label : '');
       return `<g data-action="open-muscle-chart" data-muscle="${slug}" class="${cls}"><title>${title}</title>${shapes}</g>`;
     }
 
@@ -638,22 +696,36 @@
     }
 
     function bodyDiagramHtml() {
+      const mode = mapMode();
       // The chip row is the accessible/keyboard path — SVG paths aren't
-      // focusable — so each chip also carries its level (dot + aria-label).
+      // focusable — so each chip also carries the active mode's rating
+      // (dot + aria-label).
       const chips = MUSCLE_SLUGS.map((m) => {
-        const lv = hubLevel(m);
-        const label = MUSCLE_LABELS[m] + (lv ? ' — ' + lv.label : '');
-        const dot = lv ? `<span class="inline-block w-2 h-2 rounded-full mr-1 align-baseline ${LEVEL_DOTS[lv.level]}" aria-hidden="true"></span>` : '';
+        const t = hubTint(m);
+        const label = MUSCLE_LABELS[m] + (t ? ' — ' + t.label : '');
+        const dot = t ? `<span class="inline-block w-2 h-2 rounded-full mr-1 align-baseline ${t.dot}" aria-hidden="true"></span>` : '';
         return `<button data-action="open-muscle-chart" data-muscle="${m}" title="${esc(label)}" aria-label="${esc(label)}" class="px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-400">${dot}${MUSCLE_LABELS[m]}</button>`;
       }).join('');
-      const legend = bodyweightKg
-        ? `<div class="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-3">${LEVEL_LABELS.map((l, i) =>
-            `<span class="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400"><span class="inline-block w-2.5 h-2.5 rounded-sm ${LEVEL_DOTS[i]}" aria-hidden="true"></span>${l}</span>`).join('')}</div>`
-        : '<div class="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-3">Set your bodyweight to see strength levels</div>';
-      const bwBtn = demo ? '' : `<div class="text-center mt-2">
+      const modeBtn = (v, label) => `<button data-action="map-mode" data-mode="${v}" aria-pressed="${mode === v}" class="px-2.5 py-1 text-xs leading-none transition-colors ${mode === v ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${label}</button>`;
+      const modeToggle = `<div class="flex justify-center mb-2">
+          <div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">${modeBtn('strength', 'Strength')}${modeBtn('freq', 'Frequency')}</div>
+        </div>`;
+      let legend;
+      if (mode === 'freq') {
+        legend = `<div class="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-3">${FREQ_LABELS.map((l, i) =>
+            `<span class="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400"><span class="inline-block w-2.5 h-2.5 rounded-sm ${FREQ_DOTS[i]}" aria-hidden="true"></span>${l}</span>`).join('')}</div>
+          <div class="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5">Sets per week over the last 4 weeks — ${FREQ_THRESHOLDS[1]}+ = growth expected</div>`;
+      } else {
+        legend = bodyweightKg
+          ? `<div class="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-3">${LEVEL_LABELS.map((l, i) =>
+              `<span class="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400"><span class="inline-block w-2.5 h-2.5 rounded-sm ${LEVEL_DOTS[i]}" aria-hidden="true"></span>${l}</span>`).join('')}</div>`
+          : '<div class="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-3">Set your bodyweight to see strength levels</div>';
+      }
+      const bwBtn = demo || mode === 'freq' ? '' : `<div class="text-center mt-2">
           <button data-action="open-bw-editor" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300">Bodyweight: ${bodyweightKg ? esc(fmtW(bodyweightKg) + ' ' + weightUnit) + ' · edit' : '— · set'}</button>
         </div>`;
       return `<div data-body-diagram class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
+        ${modeToggle}
         <div class="flex justify-center gap-3">
           <svg viewBox="0 0 200 316" class="w-1/2 max-w-[170px]" aria-hidden="true">${figureSvg('front')}</svg>
           <svg viewBox="0 0 200 316" class="w-1/2 max-w-[170px]" aria-hidden="true">${figureSvg('back')}</svg>
@@ -878,10 +950,60 @@
       return out;
     }
 
+    // Per-muscle training frequency over the rolling 28-day window, from the
+    // summary endpoint's flat set rows (an exercise tagged with two muscles
+    // counts toward both, matching muscleStrengthSummary). Returns
+    // { slug: { state, label, setsPerWeek, sessionsPerWeek } }.
+    function muscleFrequencySummary(rows) {
+      const cutoff = Date.now() - FREQ_WINDOW_MS;
+      const byMuscle = new Map(); // slug → { sets, sessions: Set }
+      for (const r of rows) {
+        if (new Date(r.started_at).getTime() < cutoff) continue;
+        for (const m of r.muscles || []) {
+          let b = byMuscle.get(m);
+          if (!b) { b = { sets: 0, sessions: new Set() }; byMuscle.set(m, b); }
+          b.sets++;
+          b.sessions.add(r.session_id);
+        }
+      }
+      const out = {};
+      for (const m of MUSCLE_SLUGS) {
+        const b = byMuscle.get(m);
+        const setsPerWeek = b ? b.sets / (FREQ_WINDOW_DAYS / 7) : 0;
+        const sessionsPerWeek = b ? b.sessions.size / (FREQ_WINDOW_DAYS / 7) : 0;
+        const state = freqState(setsPerWeek);
+        out[m] = { state, label: FREQ_LABELS[state], setsPerWeek, sessionsPerWeek };
+      }
+      return out;
+    }
+
+    // Same rollup for the muscle drill-in, from the history payload's
+    // per-session sets (every set counts, regardless of shape).
+    function muscleFrequency(data) {
+      const cutoff = Date.now() - FREQ_WINDOW_MS;
+      let sets = 0;
+      const sessions = new Set();
+      for (const s of data.sessions) {
+        if (new Date(s.started_at).getTime() < cutoff) continue;
+        sets += s.sets.length;
+        if (s.sets.length) sessions.add(s.session_id);
+      }
+      const setsPerWeek = sets / (FREQ_WINDOW_DAYS / 7);
+      const sessionsPerWeek = sessions.size / (FREQ_WINDOW_DAYS / 7);
+      const state = freqState(setsPerWeek);
+      return { state, label: FREQ_LABELS[state], setsPerWeek, sessionsPerWeek };
+    }
+
     // Level for a muscle on the Progress hub, or null (no score / no bodyweight).
     function hubLevel(slug) {
       const s = progressHub && progressHub.strength && progressHub.strength[slug];
       return s ? strengthLevel(slug, s.score, bodyweightKg) : null;
+    }
+
+    // Frequency state for a muscle on the Progress hub, or null (summary
+    // fetch not landed / failed — the map stays neutral, like unrated).
+    function hubFreq(slug) {
+      return (progressHub && progressHub.freq && progressHub.freq[slug]) || null;
     }
 
     // Axis/gridline label for a metric value (kg → display unit for weights).
@@ -905,11 +1027,13 @@
     }
 
     // Hand-rolled SVG line chart: true time scale on X, 0→nice-max on Y.
-    function chartSvgHtml(points, fmtY) {
+    // `guide` (optional) draws a dashed horizontal target line at that value
+    // and stretches the Y axis so the line is always visible.
+    function chartSvgHtml(points, fmtY, guide) {
       if (!points.length) return '<div data-chart class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-8">No data for this metric.</div>';
       const W = 400, H = 200, L = 48, R = 14, T = 14, B = 26;
       const maxV = Math.max(...points.map((p) => p.v));
-      const top = niceCeil(maxV <= 0 ? 10 : maxV * 1.05);
+      const top = niceCeil(Math.max(maxV <= 0 ? 10 : maxV * 1.05, guide ? guide * 1.15 : 0));
       const minT = points[0].t, maxT = points[points.length - 1].t;
       const x = (t) => maxT === minT ? L + (W - L - R) / 2 : L + (t - minT) / (maxT - minT) * (W - L - R);
       const y = (v) => T + (1 - v / top) * (H - T - B);
@@ -922,9 +1046,13 @@
       const idxs = [...new Set(points.length < 3 ? [0, points.length - 1] : [0, Math.floor((points.length - 1) / 2), points.length - 1])];
       const xlab = idxs.map((i) => `<text x="${x(points[i].t).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" class="fill-zinc-400 dark:fill-zinc-500">${esc(fmtDateShort(points[i].t))}</text>`).join('');
       const pts = points.map((p) => x(p.t).toFixed(1) + ',' + y(p.v).toFixed(1)).join(' ');
+      const guideLine = guide
+        ? `<line x1="${L}" x2="${W - R}" y1="${y(guide).toFixed(1)}" y2="${y(guide).toFixed(1)}" stroke="#059669" stroke-width="1.5" stroke-dasharray="5 4"/>` +
+          `<text x="${W - R}" y="${(y(guide) - 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#059669">growth target</text>`
+        : '';
       const line = points.length > 1 ? `<polyline points="${pts}" fill="none" stroke="#7c3aed" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '';
       const dots = points.map((p) => `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.2" fill="#7c3aed"/>`).join('');
-      return `<div data-chart class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-2"><svg viewBox="0 0 ${W} ${H}" class="w-full">${grid}${line}${dots}${xlab}</svg></div>`;
+      return `<div data-chart class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-2"><svg viewBox="0 0 ${W} ${H}" class="w-full">${grid}${guideLine}${line}${dots}${xlab}</svg></div>`;
     }
 
     function muscleEditorHtml() {
@@ -1045,11 +1173,20 @@
             <span class="text-xs text-zinc-500 shrink-0">${n} set${n === 1 ? '' : 's'}${e1 ? ' · ' + fmtMetricVal('e1rm', e1) + ' ' + weightUnit + ' e1RM' : ''}</span>
           </button>`;
         }).join('');
+        // Training-frequency ("growth") status — shown for every metric,
+        // alongside (never replacing) the strength headline below it.
+        const fq = muscleFrequency(mv.data);
+        const fmt1 = (v) => String(Math.round(v * 10) / 10);
+        const freqLine = `<div class="mb-2 text-sm text-zinc-600 dark:text-zinc-300">
+          <span class="px-2 py-0.5 rounded-full text-xs font-medium ${FREQ_BADGES[fq.state]}">${fq.label}</span>
+          <span class="text-xs text-zinc-500 ml-1">${fmt1(fq.setsPerWeek)} sets/wk · ${fmt1(fq.sessionsPerWeek)} workouts/wk over the last 4 weeks</span>
+        </div>`;
         body = `
+          ${freqLine}
           ${metricToggleHtml(metrics, mv.metric)}
           ${headline}
           <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${mv.metric === 'e1rm' ? 'Est. 1RM · ' + weightUnit : 'Weekly ' + (mv.metric === 'vol' ? 'volume · ' + weightUnit : 'sets')}</div>
-          ${chartSvgHtml(points, (v) => fmtMetricVal(mv.metric, v))}
+          ${chartSvgHtml(points, (v) => fmtMetricVal(mv.metric, v), mv.metric === 'sets' ? FREQ_THRESHOLDS[1] : 0)}
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">Exercises</div>
           <div class="space-y-1.5 pb-6">${exRows}</div>`;
       }
@@ -1066,7 +1203,9 @@
     }
 
     async function openProgress() {
-      progressHub = { query: '', list: [], strength: null };
+      // Default map mode: strength when a bodyweight is set, frequency when
+      // it isn't (strength tinting is hidden anyway without one).
+      progressHub = { query: '', list: [], strength: null, freq: null, mode: bodyweightKg ? 'strength' : 'freq' };
       exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
       openForm = null; picker = null; importSheet = null; exportSheet = null;
       view = 'progress';
@@ -1078,7 +1217,10 @@
       ]);
       if (progressHub) {
         progressHub.list = listRes.exercises;
-        if (sumRes) progressHub.strength = muscleStrengthSummary(sumRes.sets);
+        if (sumRes) {
+          progressHub.strength = muscleStrengthSummary(sumRes.sets);
+          progressHub.freq = muscleFrequencySummary(sumRes.sets);
+        }
         renderProgressList();
         renderBodyDiagram();
       }
@@ -1801,6 +1943,11 @@
           else if (view === 'muscle' && muscleView) muscleView.metric = el.dataset.metric;
           render();
           break;
+        case 'map-mode':
+          // Repaint just the diagram slot so the progress search box keeps
+          // its text/focus (same late-fill pattern as renderBodyDiagram).
+          if (progressHub) { progressHub.mode = el.dataset.mode; renderBodyDiagram(); }
+          break;
         case 'chart-back': {
           if (view === 'muscle') { muscleView = null; await openProgress(); break; }
           const from = (exerciseView && exerciseView.from) || 'progress';
@@ -2092,7 +2239,13 @@
       // ?progress=1 / ?exercise=<id> / ?muscle=<slug> deep-link into the
       // Progress area — used by the proposal checks like ?session above.
       if (params.get('progress') === '1') {
-        try { await openProgress(); return; } catch (_) {}
+        try {
+          await openProgress();
+          // &freq=1 pre-selects the body map's Frequency mode — lets the
+          // proposal checks assert on the frequency legend.
+          if (params.get('freq') === '1' && progressHub) { progressHub.mode = 'freq'; renderBodyDiagram(); }
+          return;
+        } catch (_) {}
       }
       const deepExercise = parseInt(params.get('exercise') || '', 10);
       if (deepExercise) {
