@@ -481,20 +481,23 @@ app.get('/api/muscles/:muscle/history', wrap(async (req, res) => {
   res.json({ muscle, exercises, sessions });
 }));
 
-// Raw weighted reps-sets from the last 84 days across ALL tagged exercises —
-// the client rolls these up into per-muscle strength scores/levels for the
-// Progress hub's body-map tinting (aggregation stays client-side, matching
-// the raw-sets convention above; 84 days = the client's 12-week expiry).
+// Raw sets from the last 84 days across ALL tagged exercises — the client
+// rolls these up into per-muscle strength scores/levels AND the 28-day
+// training-frequency states for the Progress hub's body-map tinting
+// (aggregation stays client-side, matching the raw-sets convention above;
+// 84 days = the client's 12-week strength expiry). All set shapes are
+// included: the strength rollup self-filters (setE1rm ignores time /
+// zero-weight rows) while the frequency rollup counts every set.
 app.get('/api/muscles/summary', wrap(async (req, res) => {
   const uid = readUserId(req);
   const { rows } = await pool.query(
-    `SELECT se.exercise_id, e.name AS exercise_name, e.muscles, s.started_at, st.reps, st.weight
+    `SELECT se.exercise_id, e.name AS exercise_name, e.muscles, s.id AS session_id, s.started_at,
+            st.set_type, st.reps, st.weight
      FROM sets st
      JOIN session_exercises se ON se.id = st.session_exercise_id
      JOIN exercises e ON e.id = se.exercise_id
      JOIN workout_sessions s ON s.id = se.session_id
      WHERE s.user_id = $1 AND e.user_id = $1
-       AND st.set_type = 'reps' AND st.weight > 0
        AND e.muscles IS NOT NULL AND array_length(e.muscles, 1) > 0
        AND s.started_at >= NOW() - INTERVAL '84 days'
      ORDER BY s.started_at`,
@@ -1028,7 +1031,9 @@ async function seedStagingDemo() {
       (900001, 900001, 'Staging demo bench press', 'reps'),
       (900002, 900001, 'Staging demo squat', 'reps'),
       (900003, 900001, 'Staging demo plank', 'time'),
-      (900004, 900001, 'Staging demo split squat', 'reps')
+      (900004, 900001, 'Staging demo split squat', 'reps'),
+      (900005, 900001, 'Staging demo push-up', 'reps'),
+      (900006, 900001, 'Staging demo lunge', 'reps')
     ON CONFLICT (id) DO NOTHING
   `);
   // Explicit demo muscle tags: on a long-lived staging DB the exercise rows
@@ -1039,6 +1044,8 @@ async function seedStagingDemo() {
     [900002, ['quads', 'glutes'], 'reps'],
     [900003, ['core'], 'time'],
     [900004, ['quads', 'glutes'], 'reps'],
+    [900005, ['chest', 'triceps'], 'reps'],
+    [900006, ['quads', 'glutes'], 'reps'],
   ];
   for (const [id, muscles, type] of demoTags) {
     await pool.query(
@@ -1065,7 +1072,10 @@ async function seedStagingDemo() {
       (900003, 900001, NOW() - INTERVAL '24 days', NULL),
       (900004, 900001, NOW() - INTERVAL '17 days', NULL),
       (900005, 900001, NOW() - INTERVAL '10 days', NULL),
-      (900006, 900001, NOW() - INTERVAL '9 days', NULL)
+      (900006, 900001, NOW() - INTERVAL '9 days', NULL),
+      (900007, 900001, NOW() - INTERVAL '20 days', NULL),
+      (900008, 900001, NOW() - INTERVAL '13 days', NULL),
+      (900009, 900001, NOW() - INTERVAL '6 days', NULL)
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -1080,7 +1090,13 @@ async function seedStagingDemo() {
       (900008, 900004, 900001, NULL, NOW() - INTERVAL '17 days'),
       (900009, 900004, 900003, NULL, NOW() - INTERVAL '17 days' + INTERVAL '15 minutes'),
       (900010, 900005, 900001, NULL, NOW() - INTERVAL '10 days'),
-      (900011, 900006, 900002, NULL, NOW() - INTERVAL '9 days')
+      (900011, 900006, 900002, NULL, NOW() - INTERVAL '9 days'),
+      (900012, 900007, 900005, NULL, NOW() - INTERVAL '20 days'),
+      (900013, 900007, 900006, NULL, NOW() - INTERVAL '20 days' + INTERVAL '15 minutes'),
+      (900014, 900008, 900005, NULL, NOW() - INTERVAL '13 days'),
+      (900015, 900008, 900006, NULL, NOW() - INTERVAL '13 days' + INTERVAL '15 minutes'),
+      (900016, 900009, 900005, NULL, NOW() - INTERVAL '6 days'),
+      (900017, 900009, 900006, NULL, NOW() - INTERVAL '6 days' + INTERVAL '15 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -1107,6 +1123,32 @@ async function seedStagingDemo() {
       (900019, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days'),
       (900020, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '3 minutes'),
       (900021, 900011, 'reps', 6, 75,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '6 minutes')
+    ON CONFLICT (id) DO NOTHING
+  `);
+  // Sessions 900007–900009 exist purely for the frequency ("growth")
+  // indicator demo: three push-up + lunge workouts spread over the last
+  // three weeks lift chest to "On track" (41 sets/28d ≈ 10.3 sets/wk) and
+  // quads/glutes to "Maintaining" (16 sets = 4.0/wk). All are weight-0
+  // reps sets, so they're invisible to the strength (e1RM) rollup and the
+  // demo levels above keep reading Intermediate / Novice.
+  const freqEntries = [
+    [900012, '20 days', 0, 9, 15],  // push-up: 9 sets × 15 reps
+    [900013, '20 days', 15, 4, 12], // lunge: 4 sets × 12 reps
+    [900014, '13 days', 0, 9, 15],
+    [900015, '13 days', 15, 3, 12],
+    [900016, '6 days', 0, 9, 15],
+    [900017, '6 days', 15, 3, 12],
+  ];
+  const freqSetRows = [];
+  let freqSetId = 900023;
+  for (const [entryId, ago, offsetMin, count, reps] of freqEntries) {
+    for (let i = 0; i < count; i++) {
+      freqSetRows.push(`(${freqSetId++}, ${entryId}, 'reps', ${reps}, 0, NULL, NULL, NULL, FALSE, NULL, NOW() - INTERVAL '${ago}' + INTERVAL '${offsetMin + i * 3} minutes')`);
+    }
+  }
+  await pool.query(`
+    INSERT INTO sets (id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at)
+    VALUES ${freqSetRows.join(',\n      ')}
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
