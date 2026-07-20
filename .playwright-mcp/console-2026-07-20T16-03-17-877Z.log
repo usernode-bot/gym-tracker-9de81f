@@ -1,0 +1,4 @@
+[     322ms] [WARNING] cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation @ http://127.0.0.1:3100/?demo=1&session=900002&picker=1&pickerq=t%20bar%20row:54
+[     510ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3100/api/settings?demo=1:0
+[     514ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3100/api/sessions/900002?demo=1:0
+[     600ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3100/api/sessions?demo=1:0

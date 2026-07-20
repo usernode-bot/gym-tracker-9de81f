@@ -40,6 +40,6 @@
     { "name": "Muscle drill-in shows the frequency status line", "path": "/?demo=1&muscle=chest", "expectText": "sets/wk" },
     { "name": "Demo chest frequency reads On track", "path": "/?demo=1&muscle=chest", "expectText": "On track" },
     { "name": "Bodyweight prompt shows for a fresh user", "path": "/?progress=1", "expectText": "Set your bodyweight" },
-    { "name": "Keyboard viewport directive present", "path": "/", "expectSelector": "meta[content*=\"interactive-widget\"]" }
+    { "name": "Keyboard overlays viewport (resizes-visual)", "path": "/", "expectSelector": "meta[content*=\"resizes-visual\"]" }
   ]
 }
