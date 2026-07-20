@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-visual">
   <!-- Inline data-URI favicon: prevents the browser's automatic /favicon.ico
        request (which would hit the auth-gated catch-all and 401). -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%237c3aed'/%3E%3Ctext%20x='32'%20y='34'%20font-size='34'%20text-anchor='middle'%20dominant-baseline='central'%3E%F0%9F%8F%8B%EF%B8%8F%3C/text%3E%3C/svg%3E">
@@ -79,11 +79,17 @@
        desktop window — where swipe doesn't exist — keeps its Xs. */
     @media (hover: none) and (pointer: coarse) {
       .x-delete { display: none; }
+      /* iOS Safari auto-zooms the page when a focused input's computed
+         font-size is below 16px — the !important beats Tailwind's
+         .text-sm/.text-xs so touch devices never trigger that zoom.
+         Desktop keeps its denser 14px inputs. */
+      input, textarea, select { font-size: 16px !important; }
     }
     /* Bottom-anchored UI rides above the on-screen keyboard. --kb is the
        keyboard's occlusion of the layout viewport in px (kept up to date
-       from visualViewport below); it stays 0 where the keyboard resizes
-       the layout viewport instead (interactive-widget=resizes-content). */
+       from visualViewport below); with interactive-widget=resizes-visual
+       the keyboard overlays the layout viewport on all platforms, so this
+       inset is the single mechanism that lifts bottom UI clear of it. */
     .sheet { bottom: var(--kb, 0px); }
     .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px)); }
     .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px)); }
@@ -109,10 +115,11 @@
   </script>
 
   <!-- Keyboard inset: expose how much of the layout viewport the on-screen
-       keyboard covers as --kb (px). In environments where the keyboard
-       resizes the layout viewport this stays ~0 and everything degrades to
-       plain bottom-anchoring; where it overlays (iOS Safari / some
-       WebViews) bottom UI offsets itself by var(--kb). -->
+       keyboard covers as --kb (px). With interactive-widget=resizes-visual
+       the keyboard overlays the layout viewport everywhere (no full-page
+       reflow on open/close), and bottom UI offsets itself by var(--kb).
+       In environments that still resize the layout viewport this stays ~0
+       and everything degrades to plain bottom-anchoring. -->
   <script>
   (function () {
     var vv = window.visualViewport;
@@ -151,6 +158,7 @@
     let picker = null;        // { query, list } when the add-exercise sheet is open
     let exCatalog = null;     // standardized exercise catalog (fetched once, static)
     let openForm = null;      // { entryId, setId|null, draft, error } for the set form
+    let pendingFocus = null;  // one-shot: which just-opened surface wireInputs should autofocus on the next render ('set-form' | 'entry-note' | 'session-note' | 'picker' | 'bw')
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
@@ -1285,23 +1293,38 @@
       tick();
     }
 
+    // One-shot autofocus: consumed on the render right after a surface
+    // opens, so background re-renders (undo commits, side-chip taps) never
+    // re-pop the mobile keyboard or scroll the page back to an input the
+    // user navigated away from. Active typing survives re-renders via
+    // captureFocus/restoreFocus instead.
+    function takeFocus(surface) {
+      if (pendingFocus !== surface) return false;
+      pendingFocus = null;
+      return true;
+    }
+
     function wireInputs() {
       const form = document.getElementById('set-form');
       if (form) {
         form.addEventListener('submit', onSetSubmit);
-        // Auto-focus only a blank form — focusing a pre-filled one pops the
-        // mobile keyboard over values the user may just want to log as-is.
-        const first = form.querySelector('input');
-        if (first && !first.value) {
-          first.focus({ preventScroll: true });
-          first.scrollIntoView({ block: 'nearest' });
+        if (takeFocus('set-form')) {
+          // Auto-focus only a blank form — focusing a pre-filled one pops the
+          // mobile keyboard over values the user may just want to log as-is.
+          const first = form.querySelector('input');
+          if (first && !first.value) {
+            first.focus({ preventScroll: true });
+            first.scrollIntoView({ block: 'nearest' });
+          }
         }
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
-        ni.focus({ preventScroll: true });
-        ni.scrollIntoView({ block: 'nearest' });
-        ni.setSelectionRange(ni.value.length, ni.value.length);
+        if (takeFocus('entry-note')) {
+          ni.focus({ preventScroll: true });
+          ni.scrollIntoView({ block: 'nearest' });
+          ni.setSelectionRange(ni.value.length, ni.value.length);
+        }
         ni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); ni.blur(); }
           else if (e.key === 'Escape') { ni.dataset.cancel = '1'; ni.blur(); }
@@ -1319,9 +1342,11 @@
       }
       const sni = document.getElementById('session-note-input');
       if (sni) {
-        sni.focus({ preventScroll: true });
-        sni.scrollIntoView({ block: 'nearest' });
-        sni.setSelectionRange(sni.value.length, sni.value.length);
+        if (takeFocus('session-note')) {
+          sni.focus({ preventScroll: true });
+          sni.scrollIntoView({ block: 'nearest' });
+          sni.setSelectionRange(sni.value.length, sni.value.length);
+        }
         sni.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') { e.preventDefault(); sni.blur(); }
           else if (e.key === 'Escape') { sni.dataset.cancel = '1'; sni.blur(); }
@@ -1358,7 +1383,7 @@
         const si = document.getElementById('picker-search');
         si.value = picker.query;
         si.addEventListener('input', () => { picker.query = si.value; picker.creating = null; renderPickerList(); });
-        si.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
+        if (takeFocus('picker')) si.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         renderPickerList();
       }
       if (view === 'progress' && progressHub) {
@@ -1374,7 +1399,7 @@
         const bi = document.getElementById('bw-input');
         if (bi) {
           if (bodyweightKg) bi.value = String(kgToUnitNum(bodyweightKg));
-          bi.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
+          if (takeFocus('bw')) bi.focus({ preventScroll: true }); // sheet is fixed UI — no scrollIntoView needed
         }
       }
     }
@@ -1981,6 +2006,7 @@
         }
         case 'open-bw-editor':
           bwEditor = true;
+          pendingFocus = 'bw';
           render();
           break;
         case 'close-bw-editor':
@@ -2004,6 +2030,7 @@
         }
         case 'open-picker': {
           picker = { query: '', list: [] };
+          pendingFocus = 'picker';
           render();
           // The static catalog loads once per page; a failure just means no
           // "Suggested" section — the user's own list still works.
@@ -2073,16 +2100,19 @@
         }
         case 'add-note':
           editingNote = +el.dataset.entry;
+          pendingFocus = 'entry-note';
           render();
           break;
         case 'open-add-set':
           openForm = { entryId: +el.dataset.entry, setId: null, draft: prefillDraft(+el.dataset.entry), error: '' };
+          pendingFocus = 'set-form';
           render();
           break;
         case 'edit-set': {
           const en = findEntryLocal(+el.dataset.entry);
           const st = en.sets.find((x) => x.id === +el.dataset.set);
           openForm = { entryId: en.id, setId: st.id, draft: draftFromSet(st), error: '' };
+          pendingFocus = 'set-form';
           render();
           break;
         }
@@ -2104,6 +2134,7 @@
         }
         case 'session-note':
           editingSessionNote = true;
+          pendingFocus = 'session-note';
           render();
           break;
         case 'import-json':
