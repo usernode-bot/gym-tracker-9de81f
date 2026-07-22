@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-visual">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual">
   <!-- Inline data-URI favicon: prevents the browser's automatic /favicon.ico
        request (which would hit the auth-gated catch-all and 401). -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='64'%20height='64'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%237c3aed'/%3E%3Ctext%20x='32'%20y='34'%20font-size='34'%20text-anchor='middle'%20dominant-baseline='central'%3E%F0%9F%8F%8B%EF%B8%8F%3C/text%3E%3C/svg%3E">
@@ -68,17 +68,23 @@
   </script>
   <title>Gym Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script>tailwind.config = { darkMode: 'class', future: { hoverOnlyWhenSupported: true } }</script>
 
-  <!-- Keep vertical scrolling native on swipeable rows; horizontal moves
-       are captured by the swipe-to-delete handlers. -->
+  <!-- usernode-native UI kit — centrally hosted, never vendored. Loading it
+       sets html.un-ios / .un-android / .un-desktop and exposes
+       window.unNative; every use below is guarded so the app still works
+       (legacy markup + visible ✕ delete buttons) if these fail to load. -->
+  <link rel="stylesheet" href="https://social-vibecoding.usernodelabs.org/usernode-native/v1/native.css">
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-native/v1/native.js"></script>
+
   <style>
-    [data-swipe] { touch-action: pan-y; }
-    /* Touch devices delete via swipe-left; hide the X buttons there.
+    /* Without the kit, touch devices have no swipe gesture anymore, so the
+       ✕ delete buttons must stay visible there; with the kit (html carries
+       a un-* platform class) swipe-to-delete covers touch and the ✕s hide.
        Gated on the primary pointer (not viewport width) so a narrow
        desktop window — where swipe doesn't exist — keeps its Xs. */
     @media (hover: none) and (pointer: coarse) {
-      .x-delete { display: none; }
+      html.un-ios .x-delete, html.un-android .x-delete { display: none; }
       /* iOS Safari auto-zooms the page when a focused input's computed
          font-size is below 16px — the !important beats Tailwind's
          .text-sm/.text-xs so touch devices never trigger that zoom.
@@ -89,12 +95,48 @@
        keyboard's occlusion of the layout viewport in px (kept up to date
        from visualViewport below); with interactive-widget=resizes-visual
        the keyboard overlays the layout viewport on all platforms, so this
-       inset is the single mechanism that lifts bottom UI clear of it. */
-    .sheet { bottom: var(--kb, 0px); }
-    .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px)); }
-    .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px)); }
+       inset is the single mechanism that lifts bottom UI clear of it.
+       env(safe-area-inset-bottom) joins in now that viewport-fit=cover. */
+    .sheet {
+      bottom: var(--kb, 0px);
+      padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+    }
+    .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); }
+    .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); }
     @media (prefers-reduced-motion: no-preference) {
       .sheet, .kb-bottom-4, .kb-bottom-16 { transition: bottom 150ms ease-out; }
+    }
+
+    /* ── usernode-native kit integration ─────────────────────────────── */
+    /* Theme the kit to the app's violet; radius matches rounded-xl. */
+    :root {
+      --un-accent: #7c3aed;
+      --un-radius-card: 0.75rem;
+    }
+    /* Kit sheets don't avoid the on-screen keyboard (verified against
+       native.js v1 — no visualViewport handling; platform report drafted).
+       The kit's JS only ever touches the sheet's transform, so lifting the
+       anchor with the same --kb inset the legacy sheets use is safe. */
+    .un-sheet { bottom: var(--kb, 0px); }
+    /* .un-sheet sets user-select:none for the drag gesture — keep text
+       entry/selection working in fields inside sheet content. */
+    .un-sheet input, .un-sheet textarea {
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    /* The kit nav bar is fixed — clear it (44px + notch inset). */
+    html.un-ios #app, html.un-android #app, html.un-desktop #app {
+      padding-top: calc(48px + env(safe-area-inset-top, 0px));
+    }
+    /* Undo pill picks up the kit toast surface so it reads as one family. */
+    html.un-ios #undo-toast, html.un-android #undo-toast, html.un-desktop #undo-toast {
+      background: var(--un-toast-bg);
+      color: var(--un-toast-text);
+    }
+    html.un-ios #undo-toast [data-action="undo-delete"],
+    html.un-android #undo-toast [data-action="undo-delete"],
+    html.un-desktop #undo-toast [data-action="undo-delete"] {
+      color: var(--un-toast-action);
     }
   </style>
 
@@ -173,8 +215,13 @@
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let toastTimer = null;
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set'|'hist', id, entryIds, timer } — deferred swipe delete in its undo window ('hist' = history row keyed by session id, deleting its entryIds)
-    let suppressClicksUntil = 0; // swallows the click browsers synthesize right after a swipe's touchend
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
+    let pendingNav = null;       // 'push' | 'pop' — consumed by the next render() as a kit screen transition
+
+    // usernode-native kit presence. The kit script is loaded synchronously in
+    // <head>, so this is stable by the time any of the code below runs; every
+    // kit feature degrades to the legacy markup/behavior when it's absent.
+    function hasKit() { return !!window.unNative; }
 
     // ---------- theme ----------
     const THEME_KEY = 'gym-tracker-theme';
@@ -253,6 +300,10 @@
       return sets.map((s, i) => (i ? (s.is_drop ? ' ↘ ' : ', ') : '') + fmtSet(s)).join('');
     }
     function toast(msg, ok) {
+      // The kit toast is a singleton (last-writer-wins), which is exactly
+      // right for transient status — but NOT for the undo pill, which stays
+      // custom below so an error toast can never silently eat an undo window.
+      if (hasKit()) { unNative.toast(msg); return; }
       const t = document.getElementById('toast');
       t.textContent = msg;
       t.classList.toggle('bg-red-500/90', !ok);
@@ -368,35 +419,73 @@
       return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">${opt('kg')}${opt('lbs')}</div>`;
     }
 
+    // Shared screen header. Kit: fixed blurred un-navbar (+ collapsing large
+    // title on the root screen), wired by wireNative(). Legacy: the previous
+    // in-flow <header>. `backAction` null means root screen (no back button).
+    function headerHtml({ title, subtitle, backAction, right, large }) {
+      if (hasKit()) {
+        const back = backAction
+          ? `<button data-action="${backAction}" class="un-navbar-back un-touch-target shrink-0">‹ Back</button>`
+          : '<span class="w-12 shrink-0"></span>';
+        return `<div id="un-navbar" class="un-navbar">
+            <div class="w-full max-w-md mx-auto flex items-center gap-1 min-w-0">
+              ${back}
+              <div class="un-navbar-title">${title}</div>
+              <div class="flex items-center gap-2 shrink-0">${right || ''}</div>
+            </div>
+          </div>
+          ${large ? `<h1 id="un-large-title" class="un-navbar-large" style="padding-left:0;padding-right:0">${title}</h1>` : ''}
+          ${subtitle ? `<div class="text-xs text-zinc-500 ${large ? '-mt-1' : 'pt-2'} mb-3">${subtitle}</div>` : `<div class="${large ? '' : 'pt-2'} mb-2"></div>`}`;
+      }
+      if (!backAction) {
+        return `<header class="flex items-center justify-between gap-2 py-5">
+          <h1 class="text-2xl font-bold">${title}</h1>
+          <div class="flex items-center gap-2">${right || ''}</div>
+        </header>`;
+      }
+      return `<header class="flex items-center gap-2 py-4">
+        <button data-action="${backAction}" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
+        <div class="ml-1 flex-1 min-w-0">
+          <div class="font-semibold truncate">${title}</div>
+          ${subtitle ? `<div class="text-xs text-zinc-500">${subtitle}</div>` : ''}
+        </div>
+        ${right || ''}
+      </header>`;
+    }
+
+
     function homeHtml() {
       const visible = sessions.filter((s) => !isPendingDelete('session', s.id));
+      // Kit: bare rows inside an inset-grouped .un-group card (the kit's
+      // swipe wrapper + hairline separators do the rest). Legacy: each row
+      // is its own bordered card with a visible ✕ button.
+      const rowCls = hasKit()
+        ? 'un-group-row relative flex items-stretch overflow-hidden'
+        : 'relative flex items-stretch rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden';
       const rows = visible.length ? visible.map((s) => `
-        <div class="relative rounded-xl overflow-hidden">
-          <div class="absolute inset-0 rounded-xl bg-red-500 dark:bg-red-600 flex items-center justify-end pr-5 text-white text-xl opacity-0" aria-hidden="true">🗑</div>
-          <div data-swipe="session:${s.id}" class="relative flex items-stretch rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+          <div data-swipe="session:${s.id}" class="${rowCls}">
             <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
               <div class="font-medium">${fmtDate(s.started_at)}</div>
               <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
               ${s.note ? `<div class="text-xs italic text-amber-700 dark:text-amber-200/80 truncate mt-0.5">${esc(s.note)}</div>` : ''}
             </button>
-            <button data-action="delete-session" data-id="${s.id}" class="x-delete px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
-          </div>
-        </div>`).join('')
+            <button data-action="delete-session" data-id="${s.id}" class="x-delete un-touch-target px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete workout">✕</button>
+          </div>`).join('')
         : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No workouts yet — start your first one!</div>';
+      const list = visible.length && hasKit()
+        ? `<div class="un-group">${rows}</div>`
+        : `<div class="space-y-2">${rows}</div>`;
       return `
-        <header class="flex items-center justify-between gap-2 py-5">
-          <h1 class="text-2xl font-bold">🏋️ Gym Tracker</h1>
-          <div class="flex items-center gap-2">${unitSwitcherHtml()}${themeSwitcherHtml()}</div>
-        </header>
-        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[.99] transition-all font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
+        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() + themeSwitcherHtml() })}
+        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
-        <div class="space-y-2">${rows}</div>
+        ${list}
         <div class="flex justify-center gap-6 mt-6">
-          <button data-action="export-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
-          <button data-action="import-json" class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
+          <button data-action="export-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
+          <button data-action="import-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
         </div>
-        ${importSheet ? importSheetHtml() : ''}${exportSheet ? exportSheetHtml() : ''}`;
+        ${!hasKit() && importSheet ? importSheetHtml() : ''}${!hasKit() && exportSheet ? exportSheetHtml() : ''}`;
     }
 
     function setFormHtml() {
@@ -426,7 +515,7 @@
         ${fields}
         <div class="flex items-center gap-2 mt-2">
           <div class="flex gap-1 flex-1">${sideBtn('', 'Both')}${sideBtn('left', 'L')}${sideBtn('right', 'R')}</div>
-          ${showDrop ? `<label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap"><input type="checkbox" name="drop" ${d.drop ? 'checked' : ''} class="accent-violet-600"> ↘ Drop set</label>` : ''}
+          ${showDrop ? `<label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap">↘ Drop set <input type="checkbox" name="drop" ${d.drop ? 'checked' : ''} class="${hasKit() ? 'un-switch' : 'accent-violet-600'}"></label>` : ''}
         </div>
         <input name="note" value="${esc(d.note)}" placeholder="note (optional)" maxlength="500" autocomplete="off" class="${inp} w-full mt-2">
         ${openForm.error ? `<div class="text-red-600 dark:text-red-400 text-xs mt-1.5">${esc(openForm.error)}</div>` : ''}
@@ -443,7 +532,7 @@
         ? `<input id="entry-note-input" data-entry="${en.id}" value="${esc(en.note || '')}" placeholder="Add a note…" maxlength="500" autocomplete="off" class="${inp} w-full mt-1.5">`
         : en.note
           ? `<button data-action="add-note" data-entry="${en.id}" class="block w-full text-left mt-1 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(en.note)}</button>`
-          : `<button data-action="add-note" data-entry="${en.id}" class="mt-0.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
+          : `<button data-action="add-note" data-entry="${en.id}" class="un-touch-target mt-0.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       const lt = en.last_time
         ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${esc(fmtSetList(en.last_time.sets))}</span></div>`
         : '';
@@ -453,39 +542,42 @@
       const setRows = en.sets.filter((s) => !isPendingDelete('set', s.id)).map((s) => {
         if (!s.is_drop) setNum++;
         if (openForm && openForm.setId === s.id) return setFormHtml();
-        return `<div class="relative rounded-lg overflow-hidden">
-          <div class="absolute inset-0 rounded-lg bg-red-500 dark:bg-red-600 flex items-center justify-end pr-3 text-white text-sm opacity-0" aria-hidden="true">🗑</div>
-          <button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
+        return `<button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
             <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
             <span class="font-mono">${esc(fmtSet(s))}</span>
             ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
-          </button>
-        </div>`;
+          </button>`;
       }).join('');
       const addArea = openForm && openForm.entryId === en.id && !openForm.setId
         ? setFormHtml()
-        : `<button data-action="open-add-set" data-entry="${en.id}" class="mt-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
-      return `<div class="relative rounded-xl overflow-hidden mb-3">
-        <div class="absolute inset-0 rounded-xl bg-red-500 dark:bg-red-600 flex items-center justify-end pr-5 text-white text-xl opacity-0" aria-hidden="true">🗑</div>
-        <div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
+        : `<button data-action="open-add-set" data-entry="${en.id}" class="un-touch-target mt-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
+      return `<div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
           <div class="flex items-center justify-between gap-2">
             <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 truncate hover:text-violet-700 dark:hover:text-violet-300">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
-            <button data-action="delete-entry" data-entry="${en.id}" class="x-delete text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
+            <button data-action="delete-entry" data-entry="${en.id}" class="x-delete un-touch-target text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
           </div>
           ${noteHtml}
           ${lt}
           <div class="mt-2">${setRows}</div>
           ${addArea}
-        </div>
+        </div>`;
+    }
+
+    // Each sheet is split into a body (shared) and a legacy wrapper: with the
+    // kit the body is presented via unNative.presentSheet (grabber +
+    // drag-to-dismiss, managed by syncSheets); without it the wrapper renders
+    // the old fixed backdrop + bottom panel inline in the view.
+    function legacySheetWrap(closeAction, body, { maxH = '85dvh', cls = '' } = {}) {
+      return `<div data-action="${closeAction}" class="fixed inset-0 bg-black/60 z-20">
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 ${cls}" style="max-height:max(12rem, calc(${maxH} - var(--kb, 0px)))">${body}</div>
       </div>`;
     }
 
-    function importSheetHtml() {
-      return `<div data-action="close-import" class="fixed inset-0 bg-black/60 z-20">
-        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
+    function importSheetBodyHtml() {
+      return `<div class="flex flex-col gap-2 min-h-0">
           <div class="flex items-center justify-between">
             <div class="font-semibold">Import workouts</div>
-            <button data-action="close-import" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+            <button data-action="close-import" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400">Paste JSON (a Gym Tracker export, or your conversion script's output in the same format), or choose a .json file. Workouts whose start time already exists are skipped, so re-importing is safe.</p>
           <div class="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -496,37 +588,41 @@
           <textarea id="import-text" rows="8" spellcheck="false" placeholder='{ "sessions": [ { "started_at": "2024-05-03T18:30:00Z", "exercises": [ … ] } ] }' class="${inp} w-full font-mono text-xs" style="min-height:8rem"></textarea>
           ${importSheet.error ? `<div class="text-red-600 dark:text-red-400 text-xs">${esc(importSheet.error)}</div>` : ''}
           <button data-action="run-import" ${importSheet.busy ? 'disabled' : ''} class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-sm font-medium">${importSheet.busy ? 'Importing…' : 'Import'}</button>
-        </div>
-      </div>`;
+        </div>`;
+    }
+    function importSheetHtml() {
+      return legacySheetWrap('close-import', importSheetBodyHtml(), { cls: 'flex flex-col' });
     }
 
-    function exportSheetHtml() {
-      return `<div data-action="close-export" class="fixed inset-0 bg-black/60 z-20">
-        <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col gap-2" style="max-height:85vh">
+    function exportSheetBodyHtml() {
+      return `<div class="flex flex-col gap-2 min-h-0">
           <div class="flex items-center justify-between">
             <div class="font-semibold">Export workouts</div>
-            <button data-action="close-export" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+            <button data-action="close-export" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400">${exportSheet.count} workout${exportSheet.count === 1 ? '' : 's'} · ${esc(exportSheet.filename)}</p>
           <textarea readonly rows="6" spellcheck="false" class="${inp} w-full font-mono text-xs" style="min-height:6rem">${esc(exportSheet.text)}</textarea>
           <button data-action="download-export" class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Download .json</button>
           <button data-action="copy-export" class="w-full py-2.5 rounded-lg border ${exportSheet.copied ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-zinc-300 dark:border-zinc-600 text-zinc-700 dark:text-zinc-200 hover:border-zinc-400 dark:hover:border-zinc-500'} text-sm font-medium">${exportSheet.copied ? 'Copied ✓' : 'Copy JSON'}</button>
           <p class="text-xs text-zinc-500 dark:text-zinc-400">If the download doesn’t start (some in-app browsers block it), use Copy JSON and paste into a file or note.</p>
-        </div>
-      </div>`;
+        </div>`;
+    }
+    function exportSheetHtml() {
+      return legacySheetWrap('close-export', exportSheetBodyHtml(), { maxH: '85vh', cls: 'flex flex-col' });
     }
 
-    function pickerHtml() {
-      return `<div data-action="close-picker" class="fixed inset-0 bg-black/60 z-20">
-        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 flex flex-col" style="max-height:max(12rem, calc(75dvh - var(--kb, 0px)))">
+    function pickerBodyHtml() {
+      return `<div class="flex flex-col min-h-0">
           <div class="flex items-center justify-between mb-2">
             <div class="font-semibold">Add exercise</div>
-            <button data-action="close-picker" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+            <button data-action="close-picker" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <input id="picker-search" placeholder="Search or type a new exercise…" autocomplete="off" class="${inp} w-full mb-2">
           <div id="picker-list" class="overflow-y-auto space-y-0.5" style="min-height:8rem"></div>
-        </div>
-      </div>`;
+        </div>`;
+    }
+    function pickerHtml() {
+      return legacySheetWrap('close-picker', pickerBodyHtml(), { maxH: '75dvh', cls: 'flex flex-col' });
     }
 
     function sessionHtml() {
@@ -540,18 +636,11 @@
           ? `<button data-action="session-note" class="block w-full text-left mb-3 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
           : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       return `
-        <header class="flex items-center gap-2 py-4">
-          <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
-          <div class="ml-1 flex-1 min-w-0">
-            <div class="font-semibold">${fmtDate(session.started_at)}</div>
-            <div class="text-xs text-zinc-500">Workout session</div>
-          </div>
-          ${unitSwitcherHtml()}
-        </header>
+        ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
         ${sNote}
-        <div>${cards}</div>
-        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-1 mb-4">+ Add exercise</button>
-        ${picker ? pickerHtml() : ''}
+        <div class="space-y-3">${cards}</div>
+        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
+        ${!hasKit() && picker ? pickerHtml() : ''}
         <button data-action="reset-stopwatch" title="Tap to reset" class="fixed kb-bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
           <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
           <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
@@ -746,19 +835,12 @@
 
     function progressHtml() {
       return `
-        <header class="flex items-center gap-2 py-4">
-          <button data-action="back-home" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
-          <div class="ml-1 flex-1 min-w-0">
-            <div class="font-semibold">📈 Progress</div>
-            <div class="text-xs text-zinc-500">Tap a muscle, or pick an exercise</div>
-          </div>
-          ${unitSwitcherHtml()}
-        </header>
+        ${headerHtml({ title: '📈 Progress', subtitle: 'Tap a muscle, or pick an exercise', backAction: 'back-home', right: unitSwitcherHtml() })}
         <div id="body-diagram-slot">${bodyDiagramHtml()}</div>
         <div class="mt-5 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">By exercise</div>
         <input id="progress-search" placeholder="Search exercises…" autocomplete="off" class="${inp} w-full mb-2">
         <div id="progress-list" class="space-y-0.5 pb-6"></div>
-        ${bwEditor ? bwEditorHtml() : ''}`;
+        ${!hasKit() && bwEditor ? bwEditorHtml() : ''}`;
     }
 
     // Late-fill pass for the body diagram (same pattern as renderProgressList):
@@ -768,12 +850,11 @@
       if (slot && progressHub) slot.innerHTML = bodyDiagramHtml();
     }
 
-    function bwEditorHtml() {
-      return `<div data-action="close-bw-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
+    function bwEditorBodyHtml() {
+      return `<div>
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Bodyweight</div>
-            <button data-action="close-bw-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+            <button data-action="close-bw-editor" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">Used to rate each muscle's strength level against your lifts. Leave empty to clear.</div>
           <div class="relative">
@@ -781,8 +862,10 @@
             <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
           </div>
           <button data-action="save-bw" class="w-full mt-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Save</button>
-        </div>
-      </div>`;
+        </div>`;
+    }
+    function bwEditorHtml() {
+      return legacySheetWrap('close-bw-editor', bwEditorBodyHtml(), { cls: 'overflow-y-auto' });
     }
 
     function renderProgressList() {
@@ -1063,18 +1146,19 @@
       return `<div data-chart class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-2"><svg viewBox="0 0 ${W} ${H}" class="w-full">${grid}${guideLine}${line}${dots}${xlab}</svg></div>`;
     }
 
-    function muscleEditorHtml() {
+    function muscleEditorBodyHtml() {
       const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
-      return `<div data-action="close-muscle-editor" class="fixed inset-0 bg-black/60 z-20">
-        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 overflow-y-auto" style="max-height:max(12rem, calc(85dvh - var(--kb, 0px)))">
+      return `<div>
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Muscle groups</div>
-            <button data-action="close-muscle-editor" class="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+            <button data-action="close-muscle-editor" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <div class="flex flex-wrap gap-1.5">${MUSCLE_SLUGS.map(chip).join('')}</div>
           <button data-action="save-muscles" class="w-full mt-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Save</button>
-        </div>
-      </div>`;
+        </div>`;
+    }
+    function muscleEditorHtml() {
+      return legacySheetWrap('close-muscle-editor', muscleEditorBodyHtml(), { cls: 'overflow-y-auto' });
     }
 
     function exerciseChartHtml() {
@@ -1096,23 +1180,23 @@
           .map((s) => ({ t: new Date(s.started_at).getTime(), v: sessionMetricValue(s.sets, metric) }))
           .filter((p) => p.v !== null);
         const wm = metric === 'maxw' || metric === 'vol' || metric === 'e1rm';
+        const histRowCls = hasKit()
+          ? 'un-group-row relative flex items-stretch overflow-hidden'
+          : 'relative flex items-stretch rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden';
         const hist = [...visibleSessions].reverse().map((s) => `
-          <div class="relative rounded-lg overflow-hidden">
-            <div class="absolute inset-0 rounded-lg bg-red-500 dark:bg-red-600 flex items-center justify-end pr-4 text-white opacity-0" aria-hidden="true">🗑</div>
-            <div data-swipe="hist:${s.session_id}" class="relative flex items-stretch rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+            <div data-swipe="hist:${s.session_id}" class="${histRowCls}">
               <button data-action="open-session" data-id="${s.session_id}" class="flex-1 text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
                 <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
                 <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
               </button>
-              <button data-action="delete-history-entry" data-session="${s.session_id}" class="x-delete px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete this exercise from that workout">✕</button>
-            </div>
-          </div>`).join('');
+              <button data-action="delete-history-entry" data-session="${s.session_id}" class="x-delete un-touch-target px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete this exercise from that workout">✕</button>
+            </div>`).join('');
         body = `
           ${metrics.length > 1 ? metricToggleHtml(metrics, metric) : ''}
           <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${METRIC_LABELS[metric]}${wm ? ' · ' + weightUnit : ''}</div>
           ${chartSvgHtml(points, (v) => fmtMetricVal(metric, v))}
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">History</div>
-          <div class="space-y-1.5 pb-6">${hist}</div>`;
+          ${hasKit() ? `<div class="un-group mb-6">${hist}</div>` : `<div class="space-y-1.5 pb-6">${hist}</div>`}`;
       }
       // Whole-exercise delete: too destructive for the 5s undo window, so it
       // uses an inline two-step confirm instead (blocking confirm() dialogs
@@ -1129,18 +1213,11 @@
             <button data-action="delete-exercise" class="text-xs text-zinc-500 hover:text-red-600 dark:text-zinc-600 dark:hover:text-red-400 px-2 py-1">🗑 Delete exercise…</button>
           </div>`;
       return `
-        <header class="flex items-center gap-2 py-4">
-          <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
-          <div class="ml-1 flex-1 min-w-0">
-            <div class="font-semibold truncate">${esc(d.name)}</div>
-            <div class="text-xs text-zinc-500">${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'}</div>
-          </div>
-          ${unitSwitcherHtml()}
-        </header>
+        ${headerHtml({ title: esc(d.name), subtitle: `${visibleSessions.length} workout${visibleSessions.length === 1 ? '' : 's'}`, backAction: 'chart-back', right: unitSwitcherHtml() })}
         <div class="flex items-center gap-1.5 flex-wrap mb-3">${typeBadgeHtml(d.exercise_type)}${tagChips}${editBtn}</div>
         ${body}
         ${delBlock}
-        ${muscleEditor ? muscleEditorHtml() : ''}`;
+        ${!hasKit() && muscleEditor ? muscleEditorHtml() : ''}`;
     }
 
     function muscleChartHtml() {
@@ -1199,14 +1276,7 @@
           <div class="space-y-1.5 pb-6">${exRows}</div>`;
       }
       return `
-        <header class="flex items-center gap-2 py-4">
-          <button data-action="chart-back" class="px-2 py-1 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-lg">‹ Back</button>
-          <div class="ml-1 flex-1 min-w-0">
-            <div class="font-semibold">${label}</div>
-            <div class="text-xs text-zinc-500">Weekly training across tagged exercises</div>
-          </div>
-          ${unitSwitcherHtml()}
-        </header>
+        ${headerHtml({ title: label, subtitle: 'Weekly training across tagged exercises', backAction: 'chart-back', right: unitSwitcherHtml() })}
         ${body}`;
     }
 
@@ -1261,7 +1331,7 @@
     // the user is typing) doesn't slam the mobile keyboard shut.
     function captureFocus() {
       const el = document.activeElement;
-      if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'file' || !el.closest('#app')) return null;
+      if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'file' || !el.closest('#app, [data-un-sheet-host]')) return null;
       const name = el.closest('#set-form') ? el.name : null;
       if (!el.id && !name) return null;
       let start = null, end = null;
@@ -1281,16 +1351,106 @@
     }
 
     function render() {
-      const html = view === 'home' ? homeHtml()
-        : view === 'session' ? sessionHtml()
-        : view === 'progress' ? progressHtml()
-        : view === 'exercise' ? exerciseChartHtml()
-        : muscleChartHtml();
-      const focused = captureFocus();
-      document.getElementById('app').innerHTML = html;
-      wireInputs();
-      restoreFocus(focused);
-      tick();
+      // A view-changing action sets pendingNav ('push'/'pop'); everything
+      // else re-renders instantly — per the kit's fidelity rules, no
+      // animation on high-frequency updates (toggles, typing, undo commits).
+      const nav = pendingNav;
+      pendingNav = null;
+      const apply = () => {
+        const html = view === 'home' ? homeHtml()
+          : view === 'session' ? sessionHtml()
+          : view === 'progress' ? progressHtml()
+          : view === 'exercise' ? exerciseChartHtml()
+          : muscleChartHtml();
+        const focused = captureFocus();
+        document.getElementById('app').innerHTML = html;
+        syncSheets();
+        wireInputs();
+        restoreFocus(focused);
+        wireNative();
+        tick();
+      };
+      if (hasKit() && nav) unNative.transition(apply, { type: nav });
+      else apply();
+    }
+
+    // ---------- usernode-native wiring ----------
+
+    // Kit-presented bottom sheets, keyed by kind. syncSheets() reconciles
+    // them with the app's sheet state on every render: present when state
+    // opens, refresh content in place while open (focus/caret survive via
+    // captureFocus/restoreFocus), dismiss when state clears. A user
+    // drag/backdrop dismissal calls back through onDismiss to clear state.
+    const kitSheets = {};
+    function syncKitSheet(kind, open, bodyHtml, onClosed) {
+      const cur = kitSheets[kind];
+      if (open && !cur) {
+        const el = document.createElement('div');
+        el.dataset.unSheetHost = kind;
+        el.className = 'w-full max-w-md mx-auto';
+        // The sheet itself is lifted above the keyboard via the .un-sheet
+        // --kb override; cap content height to what remains visible.
+        el.style.maxHeight = 'calc(85dvh - var(--kb, 0px))';
+        el.style.overflowY = 'auto';
+        el.style.touchAction = 'pan-y';
+        el.innerHTML = bodyHtml();
+        const handle = unNative.presentSheet({
+          contentEl: el,
+          onDismiss: () => {
+            if (kitSheets[kind] && kitSheets[kind].el === el) {
+              delete kitSheets[kind];
+              onClosed();
+            }
+          },
+        });
+        kitSheets[kind] = { handle, el };
+      } else if (open && cur) {
+        cur.el.innerHTML = bodyHtml();
+      } else if (!open && cur) {
+        delete kitSheets[kind]; // before dismiss() so onDismiss no-ops
+        cur.handle.dismiss();
+      }
+    }
+
+    function syncSheets() {
+      if (!hasKit()) return; // legacy sheets render inline in the view html
+      syncKitSheet('picker', !!picker && view === 'session', pickerBodyHtml, () => { picker = null; });
+      syncKitSheet('import', !!importSheet && view === 'home', importSheetBodyHtml, () => { importSheet = null; });
+      syncKitSheet('export', !!exportSheet && view === 'home', exportSheetBodyHtml, () => { exportSheet = null; });
+      syncKitSheet('muscle-editor', !!muscleEditor && view === 'exercise', muscleEditorBodyHtml, () => { muscleEditor = null; });
+      syncKitSheet('bw', !!bwEditor && view === 'progress', bwEditorBodyHtml, () => { bwEditor = null; });
+    }
+
+    // Re-attach kit behaviors after every innerHTML swap. Old handles are
+    // detached first (their nodes are gone, but detach also unhooks the
+    // window-level listeners attachNavBar installs).
+    let kitDetach = [];
+    function wireNative() {
+      if (!hasKit()) return;
+      for (const h of kitDetach) { try { h.detach(); } catch (_) {} }
+      kitDetach = [];
+      document.querySelectorAll('#app [data-swipe]').forEach((row) => {
+        const key = row.dataset.swipe;
+        kitDetach.push(unNative.attachSwipeActions(row, {
+          actions: [{
+            label: 'Delete',
+            destructive: true,
+            // The kit removes the row from the DOM first, then calls this —
+            // startPendingDelete re-renders with the row hidden and owns the
+            // 5s undo window (Undo re-renders it back in).
+            handler: () => {
+              const i = key.indexOf(':');
+              startPendingDelete(key.slice(0, i), +key.slice(i + 1));
+            },
+          }],
+        }));
+      });
+      const bar = document.getElementById('un-navbar');
+      if (bar) {
+        kitDetach.push(unNative.attachNavBar(bar, {
+          largeTitleEl: document.getElementById('un-large-title') || undefined,
+        }));
+      }
     }
 
     // One-shot autofocus: consumed on the render right after a surface
@@ -1828,81 +1988,30 @@
       }
     });
 
-    // Delegated touch handlers survive the app's full re-renders, mirroring
-    // the click delegation below. Only touch input fires these — desktop
-    // mouse users are unaffected.
-    let swipeGesture = null;
-    document.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) return;
-      const t = e.target;
-      if (!t.closest || t.closest('#set-form') || t.closest('input, textarea')) return;
-      const el = t.closest('[data-swipe]'); // innermost swipeable wins (set row inside entry card)
-      if (!el) return;
-      swipeGesture = {
-        el,
-        key: el.dataset.swipe,
-        startX: e.touches[0].clientX,
-        startY: e.touches[0].clientY,
-        lastX: e.touches[0].clientX,
-        lastT: e.timeStamp,
-        vx: 0,
-        dx: 0,
-        width: el.offsetWidth,
-        armed: false,
-        dead: false,
-      };
-    }, { passive: true });
+    // Pull-to-refresh (kit; no-op on desktop): the page scrolls as one
+    // document, so attach once to the window scroller with #app as the
+    // rubberband content. Reloads whatever view is current — same dispatch
+    // as the visibilitychange reload above — flushing any pending swipe
+    // delete first so lists stay consistent.
+    if (hasKit()) {
+      unNative.attachPullToRefresh(window, async () => {
+        try {
+          await flushPendingDelete();
+          if (view === 'session' && session) await refreshSession();
+          else if (view === 'progress') await openProgress();
+          else if (view === 'exercise' && exerciseView) await refreshExerciseView();
+          else if (view === 'muscle' && muscleView) await openMuscleChart(muscleView.muscle);
+          else await loadHome();
+        } catch (err) {
+          toast(err.message);
+        }
+      }, { content: document.getElementById('app') });
+    }
 
-    document.addEventListener('touchmove', (e) => {
-      const g = swipeGesture;
-      if (!g || g.dead) return;
-      const touch = e.touches[0];
-      const dx = touch.clientX - g.startX;
-      const dy = touch.clientY - g.startY;
-      if (!g.armed) {
-        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return; // within slop
-        if (Math.abs(dy) >= Math.abs(dx)) { g.dead = true; return; } // vertical scroll wins for the rest of this touch
-        g.armed = true;
-        g.el.style.transition = 'none';
-        g.el.style.willChange = 'transform';
-        // the red backdrop stays hidden at rest so it can't peek through
-        // the row's rounded corners; reveal it only while swiping
-        if (g.el.previousElementSibling) g.el.previousElementSibling.style.opacity = '1';
-      }
-      const dt = e.timeStamp - g.lastT;
-      if (dt > 0) g.vx = (touch.clientX - g.lastX) / dt;
-      g.lastX = touch.clientX;
-      g.lastT = e.timeStamp;
-      g.dx = Math.min(0, dx); // left-swipe only
-      g.el.style.transform = 'translateX(' + g.dx + 'px)';
-      if (e.cancelable) e.preventDefault();
-    }, { passive: false });
-
-    document.addEventListener('touchend', () => {
-      const g = swipeGesture;
-      swipeGesture = null;
-      if (!g || !g.armed || g.dead) return;
-      suppressClicksUntil = Date.now() + 350; // swallow the synthesized post-swipe click
-      g.el.style.transition = 'transform 150ms ease-out';
-      if (-g.dx >= g.width * 0.4 || g.vx < -0.5) {
-        g.el.style.transform = 'translateX(-' + g.width + 'px)';
-        const parts = g.key.split(':');
-        setTimeout(() => startPendingDelete(parts[0], +parts[1]), 150);
-      } else {
-        g.el.style.transform = 'translateX(0)';
-        setTimeout(() => { if (g.el.previousElementSibling) g.el.previousElementSibling.style.opacity = ''; }, 160);
-      }
-    });
-
-    document.addEventListener('touchcancel', () => {
-      const g = swipeGesture;
-      swipeGesture = null;
-      if (g && g.armed) {
-        g.el.style.transition = 'transform 150ms ease-out';
-        g.el.style.transform = 'translateX(0)';
-        setTimeout(() => { if (g.el.previousElementSibling) g.el.previousElementSibling.style.opacity = ''; }, 160);
-      }
-    });
+    // (The hand-rolled delegated touch swipe engine that used to live here is
+    // gone — swipe-to-delete is now the kit's attachSwipeActions, wired per
+    // row in wireNative(). Without the kit, the ✕ buttons stay visible on
+    // touch via the CSS gate in <head>.)
 
     // ---------- actions ----------
     async function addExercise(exerciseId) {
@@ -1914,8 +2023,6 @@
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-action]');
       if (!el) return;
-      // ignore the click a swipe just synthesized — one-shot, never the Undo button
-      if (Date.now() < suppressClicksUntil && !el.closest('#undo-toast')) { suppressClicksUntil = 0; return; }
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
       if ((action === 'close-picker' || action === 'close-import' || action === 'close-export' || action === 'close-muscle-editor' || action === 'close-bw-editor') && e.target !== el) return;
@@ -1932,10 +2039,12 @@
       switch (action) {
         case 'start-workout': {
           const s = await api('POST', '/api/sessions');
+          pendingNav = 'push';
           await openSession(s.id);
           break;
         }
         case 'open-session':
+          pendingNav = 'push';
           await openSession(+el.dataset.id);
           break;
         case 'delete-session':
@@ -1947,9 +2056,11 @@
         case 'back-home':
           openForm = null; editingNote = null; editingSessionNote = false; picker = null;
           progressHub = null; exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
+          pendingNav = 'pop';
           await loadHome();
           break;
         case 'open-progress':
+          pendingNav = 'push';
           await openProgress();
           break;
         case 'open-exercise-chart': {
@@ -1957,10 +2068,12 @@
           const from = view === 'session' && session ? 'session:' + session.id
             : view === 'muscle' && muscleView ? 'muscle:' + muscleView.muscle
             : 'progress';
+          pendingNav = 'push';
           await openExerciseChart(+el.dataset.id, from);
           break;
         }
         case 'open-muscle-chart':
+          pendingNav = 'push';
           await openMuscleChart(el.dataset.muscle);
           break;
         case 'chart-metric':
@@ -1974,6 +2087,7 @@
           if (progressHub) { progressHub.mode = el.dataset.mode; renderBodyDiagram(); }
           break;
         case 'chart-back': {
+          pendingNav = 'pop';
           if (view === 'muscle') { muscleView = null; await openProgress(); break; }
           const from = (exerciseView && exerciseView.from) || 'progress';
           exerciseView = null; muscleEditor = null;
@@ -2075,10 +2189,29 @@
           // confirm() dialogs are suppressed in the platform iframe).
           startPendingDelete('hist', +el.dataset.session);
           break;
-        case 'delete-exercise':
-          exerciseView.confirmDelete = true;
-          render();
+        case 'delete-exercise': {
+          if (hasKit()) {
+            // Native confirmation dialog (blocking confirm() is suppressed in
+            // the platform iframe; the kit alert is async and iframe-safe).
+            const d = exerciseView.data;
+            const n = d.sessions.filter((s) => !isPendingDelete('hist', s.session_id)).length;
+            const res = await unNative.alert({
+              title: 'Delete “' + d.name + '”?',
+              message: 'Its entire history' + (n ? ' (' + n + ' workout' + (n === 1 ? '' : 's') + ')' : '') + ' will be deleted. This can’t be undone.',
+              buttons: [
+                { label: 'Cancel', style: 'cancel' },
+                { label: 'Delete everything', style: 'destructive' },
+              ],
+            });
+            if (res && res.button && res.button.style === 'destructive' && exerciseView) {
+              await handle('delete-exercise-confirm', el);
+            }
+          } else {
+            exerciseView.confirmDelete = true;
+            render();
+          }
           break;
+        }
         case 'delete-exercise-cancel':
           exerciseView.confirmDelete = false;
           render();
@@ -2263,6 +2396,13 @@
               if (si) si.value = pq;
               renderPickerList();
             }
+          }
+          // &addset=1 opens the add-set form on the first exercise that has
+          // sets — lets the proposal checks assert on the set form (drop-set
+          // switch and friends) without clicks.
+          if (params.get('addset') === '1' && session && session.entries.length) {
+            const en = session.entries.find((x) => x.sets.length) || session.entries[0];
+            await handle('open-add-set', { dataset: { entry: String(en.id) } });
           }
           return;
         } catch (_) {} // unknown/foreign session — fall through to home
