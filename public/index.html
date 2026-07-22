@@ -91,6 +91,22 @@
          Desktop keeps its denser 14px inputs. */
       input, textarea, select { font-size: 16px !important; }
     }
+    /* Fixed app shell (issue #34): the document itself never scrolls —
+       #scroll is the app's only scroller. With the window scroller dead,
+       focusing an input can't jump the page frame; the browser's
+       reveal-on-focus scrolls only the inner container, like a native
+       list sliding under a fixed header. */
+    html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+    #scroll {
+      position: fixed;
+      inset: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-y: contain;
+    }
+    /* Keyboard clearance on #scroll (instant on open, eased on close) is
+       the kit's now: attachKeyboardAvoidance adds .un-kb-avoid, whose
+       rules in native.css own the --un-kb-inset content padding. */
     /* Bottom-anchored UI rides above the on-screen keyboard. --un-kb-inset
        is the keyboard's occlusion of the layout viewport in px, maintained
        by the kit (apps are sanctioned to consume it for their own fixed
@@ -144,8 +160,10 @@
   </script>
 
 </head>
-<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-dvh">
-  <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
+<body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+  <div id="scroll">
+    <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
+  </div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
   <!-- No-kit fallback only: with the kit, the undo window is a priority
        action toast (unNative.toast in startPendingDelete). -->
@@ -1417,7 +1435,23 @@
       const bar = document.getElementById('un-navbar');
       if (bar) {
         kitDetach.push(unNative.attachNavBar(bar, {
+          // The document never scrolls (fixed shell) — the default window
+          // scrollEl would never fire; watch the app's own scroller.
+          scrollEl: document.getElementById('scroll'),
           largeTitleEl: document.getElementById('un-large-title') || undefined,
+        }));
+      }
+      // Keyboard avoidance for the fixed shell's content scroller: the kit
+      // owns the whole reveal (clearance padding, tap interception with
+      // preventScroll focus, hop reveals, settled pin — issue #34).
+      // Re-attached per render because topEl must be the CURRENT navbar
+      // element; detach() clears the kit's un-kb-avoid marker so this
+      // never trips its already-attached guard. Guarded so a stale cached
+      // kit copy without the API degrades to no keyboard avoidance rather
+      // than crashing the wiring.
+      if (unNative.attachKeyboardAvoidance) {
+        kitDetach.push(unNative.attachKeyboardAvoidance(document.getElementById('scroll'), {
+          topEl: bar || undefined,
         }));
       }
     }
@@ -1983,13 +2017,13 @@
       }
     });
 
-    // Pull-to-refresh (kit; no-op on desktop): the page scrolls as one
-    // document, so attach once to the window scroller with #app as the
-    // rubberband content. Reloads whatever view is current — same dispatch
-    // as the visibilitychange reload above — flushing any pending swipe
-    // delete first so lists stay consistent.
+    // Pull-to-refresh (kit; no-op on desktop): the document is a fixed
+    // shell and #scroll is the app's only scroller, so attach once in
+    // element-container mode. Reloads whatever view is current — same
+    // dispatch as the visibilitychange reload above — flushing any pending
+    // swipe delete first so lists stay consistent.
     if (hasKit()) {
-      unNative.attachPullToRefresh(window, async () => {
+      unNative.attachPullToRefresh(document.getElementById('scroll'), async () => {
         try {
           await flushPendingDelete();
           if (view === 'session' && session) await refreshSession();
@@ -2000,8 +2034,15 @@
         } catch (err) {
           toast(err.message);
         }
-      }, { content: document.getElementById('app') });
+      });
     }
+
+    // Keyboard handling for the fixed shell is the kit's now:
+    // unNative.attachKeyboardAvoidance (wired next to attachNavBar in the
+    // kit section above) owns everything this file used to hand-roll for
+    // issue #34 — the touchend focus interception, the keyboard-aware
+    // reveal math, the coalesced viewport settle pin, the focusin hop
+    // reveal, and the iOS stray-pan reset.
 
     // (The hand-rolled delegated touch swipe engine that used to live here is
     // gone — swipe-to-delete is now the kit's attachSwipeActions, wired per
