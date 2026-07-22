@@ -104,17 +104,9 @@
       -webkit-overflow-scrolling: touch;
       overscroll-behavior-y: contain;
     }
-    /* While the keyboard is up, let bottom-of-page inputs scroll clear of
-       it (kit-maintained inset; resolves to nothing without the kit).
-       Opening is deliberately NOT transitioned: the scroll room must exist
-       in full before any reveal scroll runs, or the reveal clamps against
-       the still-growing padding and re-adjusts — visible stutter. The
-       150ms ease applies only on dismissal (un-kb removed → base rule),
-       where the clamped scroll position would otherwise snap. */
-    html.un-kb #scroll { padding-bottom: var(--un-kb-inset, 0px); transition: none; }
-    @media (prefers-reduced-motion: no-preference) {
-      #scroll { transition: padding-bottom 150ms ease-out; }
-    }
+    /* Keyboard clearance on #scroll (instant on open, eased on close) is
+       the kit's now: attachKeyboardAvoidance adds .un-kb-avoid, whose
+       rules in native.css own the --un-kb-inset content padding. */
     /* Bottom-anchored UI rides above the on-screen keyboard. --un-kb-inset
        is the keyboard's occlusion of the layout viewport in px, maintained
        by the kit (apps are sanctioned to consume it for their own fixed
@@ -1449,6 +1441,19 @@
           largeTitleEl: document.getElementById('un-large-title') || undefined,
         }));
       }
+      // Keyboard avoidance for the fixed shell's content scroller: the kit
+      // owns the whole reveal (clearance padding, tap interception with
+      // preventScroll focus, hop reveals, settled pin — issue #34).
+      // Re-attached per render because topEl must be the CURRENT navbar
+      // element; detach() clears the kit's un-kb-avoid marker so this
+      // never trips its already-attached guard. Guarded so a stale cached
+      // kit copy without the API degrades to no keyboard avoidance rather
+      // than crashing the wiring.
+      if (unNative.attachKeyboardAvoidance) {
+        kitDetach.push(unNative.attachKeyboardAvoidance(document.getElementById('scroll'), {
+          topEl: bar || undefined,
+        }));
+      }
     }
 
     // One-shot autofocus: consumed on the render right after a surface
@@ -2032,98 +2037,12 @@
       });
     }
 
-    // iOS focus pinning (issue #34): Safari can pan the visual viewport in
-    // the instant between focusing an input and the kit publishing
-    // --un-kb-inset (the #scroll keyboard padding isn't there yet when
-    // Safari runs its own reveal-on-focus). Once the keyboard geometry
-    // settles, undo any stray document offset and re-reveal the field
-    // inside #scroll — the document itself can no longer scroll, so this
-    // is the whole correction. No-op while nothing is focused so it never
-    // fights user scrolling.
-    //
-    // Two triggers share the one pin routine:
-    //  - visualViewport resize/scroll — the keyboard opening/closing (and
-    //    any stray pan) on FIRST focus.
-    //  - focusin while the keyboard is already up (html.un-kb) — tapping a
-    //    SECOND field fires NO viewport event (the keyboard stays open), so
-    //    without this the browser's own reveal-on-focus is the only
-    //    scroller, and on iOS it pans/centers the whole frame, which our
-    //    late viewport correction then yanked back — the "moves around
-    //    when tapping another box" report. Revealing the field ourselves
-    //    synchronously (the #scroll keyboard padding is already in place)
-    //    leaves the native reveal nothing to do, so nothing moves but the
-    //    inner scroller, minimally. Gated on un-kb so desktop and the
-    //    first-focus path are untouched.
-    if (window.visualViewport) {
-      let pinTimer = null;
-      const pinFocusedInput = () => {
-        const el = document.activeElement;
-        if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || !el.closest('#scroll')) return;
-        if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
-        // Reveal within the strip the user can actually see: #scroll spans
-        // the full viewport, so scrollIntoView's own visibility math ignores
-        // both the keyboard (bottom, --un-kb-inset of content padding — not
-        // a smaller scrollport) and the fixed navbar (top). Scroll the inner
-        // container directly, minimally, against those real bounds.
-        const scroller = document.getElementById('scroll');
-        const kb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--un-kb-inset')) || 0;
-        const nav = document.querySelector('.un-navbar');
-        const topLimit = (nav ? nav.getBoundingClientRect().bottom : 0) + 8;
-        const bottomLimit = window.innerHeight - kb - 8;
-        const rect = el.getBoundingClientRect();
-        if (rect.bottom > bottomLimit) scroller.scrollTop += rect.bottom - bottomLimit;
-        else if (rect.top < topLimit) scroller.scrollTop -= topLimit - rect.top;
-      };
-      // The keyboard's open/close animation fires a BURST of viewport
-      // events; pinning on each one fought the browser's own reveal scroll
-      // mid-animation (the reported stutter). Coalesce the burst into ONE
-      // corrective pin after the geometry has settled — the native reveal
-      // runs uncontested, then we make at most one minimal adjustment.
-      const queuePin = () => {
-        clearTimeout(pinTimer);
-        pinTimer = setTimeout(pinFocusedInput, 120);
-      };
-      window.visualViewport.addEventListener('resize', queuePin);
-      window.visualViewport.addEventListener('scroll', queuePin);
-      document.addEventListener('focusin', () => {
-        if (!document.documentElement.classList.contains('un-kb')) return;
-        // Keyboard already up (field-to-field hop): reveal synchronously so
-        // the native reveal-on-focus finds the field visible and stays out
-        // of it — exactly one scroll, no follow-up pass.
-        clearTimeout(pinTimer);
-        pinFocusedInput();
-      });
-      // Own the reveal outright on touch: the residual stutter was the
-      // browser's native reveal-on-focus still running on every real tap —
-      // even one corrective pin after it makes two visible motions. So the
-      // tap that WOULD focus a text field never reaches the browser's
-      // focus path: cancel it at touchend and focus ourselves with
-      // preventScroll. The native reveal never runs; the pin (touchend →
-      // immediate for hops, viewport-settle for cold opens) is the ONLY
-      // scroll. Scoped tightly: text-entry fields inside #scroll only
-      // (checkbox switches, buttons and sheet fields keep native taps),
-      // never a scroll-drag that ends on a field, and never a caret/
-      // selection tap on the already-focused field.
-      const TEXT_TYPES = new Set(['text', 'number', 'search', 'email', 'url', 'tel', 'password']);
-      let touchMoved = false, touchStartY = 0;
-      document.addEventListener('touchstart', (e) => {
-        touchMoved = false;
-        if (e.touches.length) touchStartY = e.touches[0].clientY;
-      }, { capture: true, passive: true });
-      document.addEventListener('touchmove', (e) => {
-        if (e.touches.length && Math.abs(e.touches[0].clientY - touchStartY) > 8) touchMoved = true;
-      }, { capture: true, passive: true });
-      document.addEventListener('touchend', (e) => {
-        if (touchMoved || e.touches.length) return;
-        const t = e.target;
-        if (!t || t === document.activeElement) return;
-        const isText = t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && TEXT_TYPES.has(t.type));
-        if (!isText || t.disabled || t.readOnly || !t.closest('#scroll')) return;
-        e.preventDefault(); // cancels the click and the native focus+reveal
-        t.focus({ preventScroll: true });
-        pinFocusedInput();
-      }, { passive: false });
-    }
+    // Keyboard handling for the fixed shell is the kit's now:
+    // unNative.attachKeyboardAvoidance (wired next to attachNavBar in the
+    // kit section above) owns everything this file used to hand-roll for
+    // issue #34 — the touchend focus interception, the keyboard-aware
+    // reveal math, the coalesced viewport settle pin, the focusin hop
+    // reveal, and the iOS stray-pan reset.
 
     // (The hand-rolled delegated touch swipe engine that used to live here is
     // gone — swipe-to-delete is now the kit's attachSwipeActions, wired per
