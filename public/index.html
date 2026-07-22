@@ -105,8 +105,13 @@
       overscroll-behavior-y: contain;
     }
     /* While the keyboard is up, let bottom-of-page inputs scroll clear of
-       it (kit-maintained inset; resolves to nothing without the kit). */
-    html.un-kb #scroll { padding-bottom: var(--un-kb-inset, 0px); }
+       it (kit-maintained inset; resolves to nothing without the kit).
+       Opening is deliberately NOT transitioned: the scroll room must exist
+       in full before any reveal scroll runs, or the reveal clamps against
+       the still-growing padding and re-adjusts — visible stutter. The
+       150ms ease applies only on dismissal (un-kb removed → base rule),
+       where the clamped scroll position would otherwise snap. */
+    html.un-kb #scroll { padding-bottom: var(--un-kb-inset, 0px); transition: none; }
     @media (prefers-reduced-motion: no-preference) {
       #scroll { transition: padding-bottom 150ms ease-out; }
     }
@@ -2050,9 +2055,8 @@
     //    inner scroller, minimally. Gated on un-kb so desktop and the
     //    first-focus path are untouched.
     if (window.visualViewport) {
-      let pinQueued = false;
+      let pinTimer = null;
       const pinFocusedInput = () => {
-        pinQueued = false;
         const el = document.activeElement;
         if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || !el.closest('#scroll')) return;
         if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
@@ -2070,17 +2074,24 @@
         if (rect.bottom > bottomLimit) scroller.scrollTop += rect.bottom - bottomLimit;
         else if (rect.top < topLimit) scroller.scrollTop -= topLimit - rect.top;
       };
+      // The keyboard's open/close animation fires a BURST of viewport
+      // events; pinning on each one fought the browser's own reveal scroll
+      // mid-animation (the reported stutter). Coalesce the burst into ONE
+      // corrective pin after the geometry has settled — the native reveal
+      // runs uncontested, then we make at most one minimal adjustment.
       const queuePin = () => {
-        if (pinQueued) return;
-        pinQueued = true;
-        requestAnimationFrame(pinFocusedInput);
+        clearTimeout(pinTimer);
+        pinTimer = setTimeout(pinFocusedInput, 120);
       };
       window.visualViewport.addEventListener('resize', queuePin);
       window.visualViewport.addEventListener('scroll', queuePin);
       document.addEventListener('focusin', () => {
         if (!document.documentElement.classList.contains('un-kb')) return;
-        pinFocusedInput(); // preempt the native reveal in the same task
-        queuePin();        // and re-check after layout / any native scroll
+        // Keyboard already up (field-to-field hop): reveal synchronously so
+        // the native reveal-on-focus finds the field visible and stays out
+        // of it — exactly one scroll, no follow-up pass.
+        clearTimeout(pinTimer);
+        pinFocusedInput();
       });
     }
 
