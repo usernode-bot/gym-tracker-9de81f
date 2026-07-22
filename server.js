@@ -71,6 +71,94 @@ function cleanNote(v) {
   return t ? t.slice(0, 500) : null;
 }
 
+// ---------- Staging: copy demo data to first-time testers ----------
+
+// The boot seed below puts all demo rows under fake user 900001, surfaced
+// read-only via ?demo=1 — but a real tester logging into the staging
+// preview has their own user id and would just see the empty "No workouts
+// yet" state. So in staging, the first authenticated /api request from a
+// user with NO data of their own copies the demo dataset under their own
+// user id: fully owned, so every flow (edit, delete, add sets, notes)
+// works on real rows. Idempotent — it only fires while the user has zero
+// sessions AND zero exercises, an advisory lock serializes concurrent
+// first requests, and re-runs are skipped via the existence check (plus a
+// per-process cache). Strictly a no-op outside staging. user_settings is
+// deliberately NOT copied so the first-run "Set your bodyweight" prompt
+// (and its dapp.json check) still applies to real testers.
+const stagingCopiedUsers = new Set();
+async function ensureStagingUserData(userId) {
+  if (!IS_STAGING || !Number.isInteger(userId) || userId <= 0) return;
+  if (userId === DEMO_USER_ID || stagingCopiedUsers.has(userId)) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(424242, $1::int)', [userId]);
+    const { rows: [has] } = await client.query(
+      `SELECT EXISTS(SELECT 1 FROM workout_sessions WHERE user_id = $1)
+           OR EXISTS(SELECT 1 FROM exercises WHERE user_id = $1) AS any`,
+      [userId]
+    );
+    if (!has.any) {
+      const exMap = new Map();
+      const { rows: demoEx } = await client.query(
+        'SELECT id, name, muscles, exercise_type, created_at FROM exercises WHERE user_id = $1 ORDER BY id',
+        [DEMO_USER_ID]
+      );
+      for (const ex of demoEx) {
+        const { rows: [row] } = await client.query(
+          `INSERT INTO exercises (user_id, name, muscles, exercise_type, created_at)
+           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+          [userId, ex.name, ex.muscles, ex.exercise_type, ex.created_at]
+        );
+        exMap.set(ex.id, row.id);
+      }
+      const { rows: demoSessions } = await client.query(
+        'SELECT id, started_at, note FROM workout_sessions WHERE user_id = $1 ORDER BY id',
+        [DEMO_USER_ID]
+      );
+      for (const s of demoSessions) {
+        const { rows: [newSession] } = await client.query(
+          'INSERT INTO workout_sessions (user_id, started_at, note) VALUES ($1, $2, $3) RETURNING id',
+          [userId, s.started_at, s.note]
+        );
+        const { rows: demoEntries } = await client.query(
+          'SELECT id, exercise_id, note, created_at FROM session_exercises WHERE session_id = $1 ORDER BY id',
+          [s.id]
+        );
+        for (const en of demoEntries) {
+          const { rows: [newEntry] } = await client.query(
+            `INSERT INTO session_exercises (session_id, exercise_id, note, created_at)
+             VALUES ($1, $2, $3, $4) RETURNING id`,
+            [newSession.id, exMap.get(en.exercise_id), en.note, en.created_at]
+          );
+          // ORDER BY id keeps insertion order so drop-chain grouping
+          // (derived from row order) survives the copy.
+          await client.query(
+            `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds,
+                               effort, side, is_drop, note, created_at)
+             SELECT $1, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at
+             FROM sets WHERE session_exercise_id = $2 ORDER BY id`,
+            [newEntry.id, en.id]
+          );
+        }
+      }
+    }
+    await client.query('COMMIT');
+    stagingCopiedUsers.add(userId);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    // Never fail the request over demo-copy trouble; the next request retries.
+    console.error('staging demo copy failed:', err.message);
+  } finally {
+    client.release();
+  }
+}
+
+app.use((req, res, next) => {
+  if (!IS_STAGING || !req.user || !req.path.startsWith('/api/')) return next();
+  ensureStagingUserData(Number(req.user.id)).then(() => next());
+});
+
 // ---------- Muscle groups ----------
 
 // Canonical muscle-group slugs live in exercise-catalog.js (imported above).

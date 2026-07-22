@@ -47,6 +47,7 @@
     { "name": "Kit nav bar renders in session view", "path": "/?demo=1&session=900002", "expectSelector": ".un-navbar" },
     { "name": "Inset-grouped session list on home", "path": "/?demo=1", "expectSelector": ".un-group" },
     { "name": "Drop-set switch renders in the set form", "path": "/?demo=1&session=900002&addset=1", "expectSelector": ".un-switch" },
-    { "name": "Fixed app shell (static keyboard layout)", "path": "/", "expectSelector": "#scroll" }
+    { "name": "Fixed app shell (static keyboard layout)", "path": "/", "expectSelector": "#scroll" },
+    { "name": "Staging tester sees copied demo workouts", "path": "/", "expectText": "Staging demo" }
   ]
 }

@@ -44,7 +44,12 @@ view. All workout data is strictly private per user.
   Every row is per-user content; staging gets schema only. Staging
   demo data is seeded idempotently on boot under fake
   `user_id = 900001` (ids 900001+), surfaced read-only via `?demo=1`
-  on GET routes.
+  on GET routes. In staging, a real tester's first authenticated
+  `/api` request also **copies** the demo dataset under their own
+  user id when they have no data yet (`ensureStagingUserData`) so the
+  preview isn't empty — fully owned/editable rows; `user_settings` is
+  deliberately not copied so the "Set your bodyweight" first-run
+  prompt still shows. Strictly `IS_STAGING`; no-op in production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
