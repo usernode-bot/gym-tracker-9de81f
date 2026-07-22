@@ -1033,7 +1033,12 @@ async function seedStagingDemo() {
       (900003, 900001, 'Staging demo plank', 'time'),
       (900004, 900001, 'Staging demo split squat', 'reps'),
       (900005, 900001, 'Staging demo push-up', 'reps'),
-      (900006, 900001, 'Staging demo lunge', 'reps')
+      (900006, 900001, 'Staging demo lunge', 'reps'),
+      (900007, 900001, 'Staging demo deadlift', 'reps'),
+      (900008, 900001, 'Staging demo overhead press', 'reps'),
+      (900009, 900001, 'Staging demo pull-up', 'reps'),
+      (900010, 900001, 'Staging demo dip', 'reps'),
+      (900011, 900001, 'Staging demo wall sit', 'time')
     ON CONFLICT (id) DO NOTHING
   `);
   // Explicit demo muscle tags: on a long-lived staging DB the exercise rows
@@ -1046,6 +1051,11 @@ async function seedStagingDemo() {
     [900004, ['quads', 'glutes'], 'reps'],
     [900005, ['chest', 'triceps'], 'reps'],
     [900006, ['quads', 'glutes'], 'reps'],
+    [900007, ['back', 'hamstrings'], 'reps'],
+    [900008, ['shoulders', 'triceps'], 'reps'],
+    [900009, ['back', 'biceps'], 'reps'],
+    [900010, ['chest', 'triceps'], 'reps'],
+    [900011, ['quads'], 'time'],
   ];
   for (const [id, muscles, type] of demoTags) {
     await pool.query(
@@ -1075,7 +1085,11 @@ async function seedStagingDemo() {
       (900006, 900001, NOW() - INTERVAL '9 days', NULL),
       (900007, 900001, NOW() - INTERVAL '20 days', NULL),
       (900008, 900001, NOW() - INTERVAL '13 days', NULL),
-      (900009, 900001, NOW() - INTERVAL '6 days', NULL)
+      (900009, 900001, NOW() - INTERVAL '6 days', NULL),
+      (900010, 900001, NOW() - INTERVAL '21 days', 'Staging demo workout note — pull day'),
+      (900011, 900001, NOW() - INTERVAL '14 days', NULL),
+      (900012, 900001, NOW() - INTERVAL '7 days', 'Staging demo workout note — short on time'),
+      (900013, 900001, NOW() - INTERVAL '4 days', NULL)
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -1096,7 +1110,18 @@ async function seedStagingDemo() {
       (900014, 900008, 900005, NULL, NOW() - INTERVAL '13 days'),
       (900015, 900008, 900006, NULL, NOW() - INTERVAL '13 days' + INTERVAL '15 minutes'),
       (900016, 900009, 900005, NULL, NOW() - INTERVAL '6 days'),
-      (900017, 900009, 900006, NULL, NOW() - INTERVAL '6 days' + INTERVAL '15 minutes')
+      (900017, 900009, 900006, NULL, NOW() - INTERVAL '6 days' + INTERVAL '15 minutes'),
+      (900018, 900010, 900007, NULL, NOW() - INTERVAL '21 days'),
+      (900019, 900010, 900009, 'Staging demo note — strict form', NOW() - INTERVAL '21 days' + INTERVAL '15 minutes'),
+      (900020, 900010, 900011, NULL, NOW() - INTERVAL '21 days' + INTERVAL '25 minutes'),
+      (900021, 900011, 900007, NULL, NOW() - INTERVAL '14 days'),
+      (900022, 900011, 900008, NULL, NOW() - INTERVAL '14 days' + INTERVAL '15 minutes'),
+      (900023, 900011, 900010, NULL, NOW() - INTERVAL '14 days' + INTERVAL '25 minutes'),
+      (900024, 900012, 900007, 'Staging demo note — grip felt solid', NOW() - INTERVAL '7 days'),
+      (900025, 900012, 900009, NULL, NOW() - INTERVAL '7 days' + INTERVAL '15 minutes'),
+      (900026, 900013, 900008, NULL, NOW() - INTERVAL '4 days'),
+      (900027, 900013, 900010, NULL, NOW() - INTERVAL '4 days' + INTERVAL '12 minutes'),
+      (900028, 900013, 900011, NULL, NOW() - INTERVAL '4 days' + INTERVAL '22 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -1123,6 +1148,48 @@ async function seedStagingDemo() {
       (900019, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days'),
       (900020, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '3 minutes'),
       (900021, 900011, 'reps', 6, 75,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '6 minutes')
+    ON CONFLICT (id) DO NOTHING
+  `);
+  // Sessions 900010–900013 flesh out the last three weeks with a pull/press
+  // split so the session list, progress charts and progress search have
+  // plenty to show: a deadlift progression (90→95→100 kg), overhead press,
+  // and two bodyweight movements (pull-ups, dips) logged at weight 0 — the
+  // app's bodyweight convention — plus wall-sit time sets. Weight-0 and time
+  // sets are invisible to the strength (e1RM) rollup, and no new exercise is
+  // tagged quads-with-weight, so the demo levels asserted by the dapp.json
+  // checks (chest Intermediate, quads Novice) are unaffected. Set ids start
+  // at 900100 to stay clear of the frequency loop's 900023+ range.
+  await pool.query(`
+    INSERT INTO sets (id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at) VALUES
+      (900100, 900018, 'reps', 5, 90,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days'),
+      (900101, 900018, 'reps', 5, 90,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days' + INTERVAL '4 minutes'),
+      (900102, 900018, 'reps', 5, 90,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days' + INTERVAL '8 minutes'),
+      (900103, 900019, 'reps', 8, 0,    NULL, NULL,       NULL, FALSE, 'Staging demo set note — bodyweight',  NOW() - INTERVAL '21 days' + INTERVAL '15 minutes'),
+      (900104, 900019, 'reps', 8, 0,    NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days' + INTERVAL '18 minutes'),
+      (900105, 900019, 'reps', 6, 0,    NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days' + INTERVAL '21 minutes'),
+      (900106, 900020, 'time', NULL, NULL, 45, 'shaky',   NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days' + INTERVAL '25 minutes'),
+      (900107, 900020, 'time', NULL, NULL, 40, 'shaky',   NULL, FALSE, NULL,                                  NOW() - INTERVAL '21 days' + INTERVAL '28 minutes'),
+      (900108, 900021, 'reps', 5, 95,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days'),
+      (900109, 900021, 'reps', 5, 95,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '4 minutes'),
+      (900110, 900021, 'reps', 4, 95,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '8 minutes'),
+      (900111, 900022, 'reps', 8, 35,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '15 minutes'),
+      (900112, 900022, 'reps', 8, 35,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '18 minutes'),
+      (900113, 900022, 'reps', 6, 37.5, NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '21 minutes'),
+      (900114, 900023, 'reps', 12, 0,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '25 minutes'),
+      (900115, 900023, 'reps', 10, 0,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '28 minutes'),
+      (900116, 900023, 'reps', 10, 0,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '14 days' + INTERVAL '31 minutes'),
+      (900117, 900024, 'reps', 3, 100,  NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '7 days'),
+      (900118, 900024, 'reps', 3, 100,  NULL, NULL,       NULL, FALSE, 'Staging demo set note — heavy triple', NOW() - INTERVAL '7 days' + INTERVAL '5 minutes'),
+      (900119, 900025, 'reps', 8, 0,    NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '7 days' + INTERVAL '15 minutes'),
+      (900120, 900025, 'reps', 7, 0,    NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '7 days' + INTERVAL '18 minutes'),
+      (900121, 900025, 'reps', 6, 0,    NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '7 days' + INTERVAL '21 minutes'),
+      (900122, 900026, 'reps', 8, 36,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days'),
+      (900123, 900026, 'reps', 7, 36,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days' + INTERVAL '4 minutes'),
+      (900124, 900026, 'reps', 6, 36,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days' + INTERVAL '8 minutes'),
+      (900125, 900027, 'reps', 12, 0,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days' + INTERVAL '12 minutes'),
+      (900126, 900027, 'reps', 12, 0,   NULL, NULL,       NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days' + INTERVAL '15 minutes'),
+      (900127, 900028, 'time', NULL, NULL, 60, 'level 7', NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days' + INTERVAL '22 minutes'),
+      (900128, 900028, 'time', NULL, NULL, 50, 'level 8', NULL, FALSE, NULL,                                  NOW() - INTERVAL '4 days' + INTERVAL '25 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   // Sessions 900007–900009 exist purely for the frequency ("growth")
