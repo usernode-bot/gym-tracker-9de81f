@@ -91,18 +91,20 @@
          Desktop keeps its denser 14px inputs. */
       input, textarea, select { font-size: 16px !important; }
     }
-    /* Bottom-anchored UI rides above the on-screen keyboard. --kb is the
-       keyboard's occlusion of the layout viewport in px (kept up to date
-       from visualViewport below); with interactive-widget=resizes-visual
-       the keyboard overlays the layout viewport on all platforms, so this
-       inset is the single mechanism that lifts bottom UI clear of it.
+    /* Bottom-anchored UI rides above the on-screen keyboard. --un-kb-inset
+       is the keyboard's occlusion of the layout viewport in px, maintained
+       by the kit (apps are sanctioned to consume it for their own fixed
+       bottom bars); with interactive-widget=resizes-visual the keyboard
+       overlays the layout viewport on all platforms, so this inset is the
+       single mechanism that lifts bottom UI clear of it. Without the kit it
+       resolves to 0px — plain bottom anchoring.
        env(safe-area-inset-bottom) joins in now that viewport-fit=cover. */
     .sheet {
-      bottom: var(--kb, 0px);
+      bottom: var(--un-kb-inset, 0px);
       padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
     }
-    .kb-bottom-4 { bottom: calc(1rem + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); }
-    .kb-bottom-16 { bottom: calc(4rem + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); }
+    .kb-bottom-4 { bottom: calc(1rem + var(--un-kb-inset, 0px) + env(safe-area-inset-bottom, 0px)); }
+    .kb-bottom-16 { bottom: calc(4rem + var(--un-kb-inset, 0px) + env(safe-area-inset-bottom, 0px)); }
     @media (prefers-reduced-motion: no-preference) {
       .sheet, .kb-bottom-4, .kb-bottom-16 { transition: bottom 150ms ease-out; }
     }
@@ -113,11 +115,6 @@
       --un-accent: #7c3aed;
       --un-radius-card: 0.75rem;
     }
-    /* Kit sheets don't avoid the on-screen keyboard (verified against
-       native.js v1 — no visualViewport handling; platform report drafted).
-       The kit's JS only ever touches the sheet's transform, so lifting the
-       anchor with the same --kb inset the legacy sheets use is safe. */
-    .un-sheet { bottom: var(--kb, 0px); }
     /* .un-sheet sets user-select:none for the drag gesture — keep text
        entry/selection working in fields inside sheet content. */
     .un-sheet input, .un-sheet textarea {
@@ -127,16 +124,6 @@
     /* The kit nav bar is fixed — clear it (44px + notch inset). */
     html.un-ios #app, html.un-android #app, html.un-desktop #app {
       padding-top: calc(48px + env(safe-area-inset-top, 0px));
-    }
-    /* Undo pill picks up the kit toast surface so it reads as one family. */
-    html.un-ios #undo-toast, html.un-android #undo-toast, html.un-desktop #undo-toast {
-      background: var(--un-toast-bg);
-      color: var(--un-toast-text);
-    }
-    html.un-ios #undo-toast [data-action="undo-delete"],
-    html.un-android #undo-toast [data-action="undo-delete"],
-    html.un-desktop #undo-toast [data-action="undo-delete"] {
-      color: var(--un-toast-action);
     }
   </style>
 
@@ -156,32 +143,12 @@
   })();
   </script>
 
-  <!-- Keyboard inset: expose how much of the layout viewport the on-screen
-       keyboard covers as --kb (px). With interactive-widget=resizes-visual
-       the keyboard overlays the layout viewport everywhere (no full-page
-       reflow on open/close), and bottom UI offsets itself by var(--kb).
-       In environments that still resize the layout viewport this stays ~0
-       and everything degrades to plain bottom-anchoring. -->
-  <script>
-  (function () {
-    var vv = window.visualViewport;
-    if (!vv) return;
-    var raf = 0;
-    function update() {
-      raf = 0;
-      var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      document.documentElement.style.setProperty('--kb', Math.round(kb) + 'px');
-    }
-    function schedule() { if (!raf) raf = requestAnimationFrame(update); }
-    vv.addEventListener('resize', schedule);
-    vv.addEventListener('scroll', schedule);
-    update();
-  })();
-  </script>
 </head>
 <body class="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-dvh">
   <div id="app" class="w-full max-w-md mx-auto px-4 pb-28"></div>
   <div id="toast" class="hidden fixed top-3 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-50 max-w-[90%] text-center shadow-lg"></div>
+  <!-- No-kit fallback only: with the kit, the undo window is a priority
+       action toast (unNative.toast in startPendingDelete). -->
   <div id="undo-toast" class="hidden fixed kb-bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
     <span id="undo-toast-msg"></span>
     <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
@@ -300,9 +267,11 @@
       return sets.map((s, i) => (i ? (s.is_drop ? ' ↘ ' : ', ') : '') + fmtSet(s)).join('');
     }
     function toast(msg, ok) {
-      // The kit toast is a singleton (last-writer-wins), which is exactly
-      // right for transient status — but NOT for the undo pill, which stays
-      // custom below so an error toast can never silently eat an undo window.
+      // The kit toast is a singleton (last-writer-wins) among ordinary
+      // toasts — right for transient status. The undo window uses a
+      // *priority* kit toast (see startPendingDelete), which ordinary
+      // toasts queue behind instead of displacing, so an error toast can
+      // never silently eat an undo window.
       if (hasKit()) { unNative.toast(msg); return; }
       const t = document.getElementById('toast');
       t.textContent = msg;
@@ -569,7 +538,7 @@
     // the old fixed backdrop + bottom panel inline in the view.
     function legacySheetWrap(closeAction, body, { maxH = '85dvh', cls = '' } = {}) {
       return `<div data-action="${closeAction}" class="fixed inset-0 bg-black/60 z-20">
-        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 ${cls}" style="max-height:max(12rem, calc(${maxH} - var(--kb, 0px)))">${body}</div>
+        <div class="sheet absolute inset-x-0 mx-auto w-full max-w-md bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700 rounded-t-2xl p-4 ${cls}" style="max-height:max(12rem, calc(${maxH} - var(--un-kb-inset, 0px)))">${body}</div>
       </div>`;
     }
 
@@ -1388,9 +1357,9 @@
         const el = document.createElement('div');
         el.dataset.unSheetHost = kind;
         el.className = 'w-full max-w-md mx-auto';
-        // The sheet itself is lifted above the keyboard via the .un-sheet
-        // --kb override; cap content height to what remains visible.
-        el.style.maxHeight = 'calc(85dvh - var(--kb, 0px))';
+        // The kit lifts the sheet above the on-screen keyboard itself
+        // (--un-kb-inset); cap content height to what remains visible.
+        el.style.maxHeight = 'calc(85dvh - var(--un-kb-inset, 0px))';
         el.style.overflowY = 'auto';
         el.style.touchAction = 'pan-y';
         el.innerHTML = bodyHtml();
@@ -1910,6 +1879,8 @@
       if (pd.kind === 'hist') return (pd.entryIds || []).map((id) => '/api/session-exercises/' + id);
       return ['/api/sets/' + pd.id];
     }
+    // No-kit fallback pill; with the kit the undo window is a priority
+    // action toast presented in startPendingDelete.
     function showUndoToast(msg) {
       document.getElementById('undo-toast-msg').textContent = msg;
       document.getElementById('undo-toast').classList.remove('hidden');
@@ -1927,9 +1898,31 @@
         if (!entryIds.length) return;
       }
       flushPendingDelete().catch((err) => toast(err.message)); // a new swipe commits the previous pending delete right away
-      pendingDelete = { kind, id, entryIds, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000) };
-      render();
-      showUndoToast(DELETE_LABELS[kind]);
+      if (hasKit()) {
+        // The kit's priority action toast owns the undo window: ordinary
+        // toasts queue behind it, and onClose fires exactly once — commit on
+        // any close reason except 'action' (= Undo tapped). The identity
+        // guard makes the stale onClose of a displaced or already-flushed
+        // toast a no-op (a second swipe's new priority toast closes this one
+        // with 'replaced' *after* flushPendingDelete already committed it).
+        const pd = { kind, id, entryIds, timer: null, handle: null };
+        pendingDelete = pd;
+        pd.handle = unNative.toast(DELETE_LABELS[kind], {
+          priority: true,
+          duration: 5000,
+          action: { label: 'Undo', handler: undoPendingDelete },
+          onClose: (reason) => {
+            if (reason !== 'action' && pendingDelete === pd) {
+              commitPendingDelete().catch((err) => toast(err.message));
+            }
+          },
+        });
+        render();
+      } else {
+        pendingDelete = { kind, id, entryIds, timer: setTimeout(() => { commitPendingDelete().catch((err) => toast(err.message)); }, 5000), handle: null };
+        render();
+        showUndoToast(DELETE_LABELS[kind]);
+      }
     }
     function undoPendingDelete() {
       if (pendingDelete) { clearTimeout(pendingDelete.timer); pendingDelete = null; }
@@ -1942,8 +1935,9 @@
     async function commitPendingDelete(opts) {
       if (!pendingDelete) return;
       const pd = pendingDelete;
-      pendingDelete = null;
+      pendingDelete = null; // before dismiss(), so the toast's onClose('dismiss') no-ops
       clearTimeout(pd.timer);
+      if (pd.handle) { try { pd.handle.dismiss(); } catch (_) {} }
       hideUndoToast();
       if (openForm && ((pd.kind === 'entry' && openForm.entryId === pd.id) || (pd.kind === 'set' && openForm.setId === pd.id))) openForm = null;
       let failed = false;
@@ -1969,8 +1963,9 @@
     function flushPendingDeleteKeepalive() {
       if (!pendingDelete) return;
       const pd = pendingDelete;
-      pendingDelete = null;
+      pendingDelete = null; // before dismiss(), so the toast's onClose('dismiss') no-ops
       clearTimeout(pd.timer);
+      if (pd.handle) { try { pd.handle.dismiss(); } catch (_) {} }
       hideUndoToast();
       needsRefreshOnShow = true;
       try {
