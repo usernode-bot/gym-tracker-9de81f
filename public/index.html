@@ -2035,6 +2035,20 @@
     // inside #scroll — the document itself can no longer scroll, so this
     // is the whole correction. No-op while nothing is focused so it never
     // fights user scrolling.
+    //
+    // Two triggers share the one pin routine:
+    //  - visualViewport resize/scroll — the keyboard opening/closing (and
+    //    any stray pan) on FIRST focus.
+    //  - focusin while the keyboard is already up (html.un-kb) — tapping a
+    //    SECOND field fires NO viewport event (the keyboard stays open), so
+    //    without this the browser's own reveal-on-focus is the only
+    //    scroller, and on iOS it pans/centers the whole frame, which our
+    //    late viewport correction then yanked back — the "moves around
+    //    when tapping another box" report. Revealing the field ourselves
+    //    synchronously (the #scroll keyboard padding is already in place)
+    //    leaves the native reveal nothing to do, so nothing moves but the
+    //    inner scroller, minimally. Gated on un-kb so desktop and the
+    //    first-focus path are untouched.
     if (window.visualViewport) {
       let pinQueued = false;
       const pinFocusedInput = () => {
@@ -2042,7 +2056,19 @@
         const el = document.activeElement;
         if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || !el.closest('#scroll')) return;
         if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
-        el.scrollIntoView({ block: 'nearest' });
+        // Reveal within the strip the user can actually see: #scroll spans
+        // the full viewport, so scrollIntoView's own visibility math ignores
+        // both the keyboard (bottom, --un-kb-inset of content padding — not
+        // a smaller scrollport) and the fixed navbar (top). Scroll the inner
+        // container directly, minimally, against those real bounds.
+        const scroller = document.getElementById('scroll');
+        const kb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--un-kb-inset')) || 0;
+        const nav = document.querySelector('.un-navbar');
+        const topLimit = (nav ? nav.getBoundingClientRect().bottom : 0) + 8;
+        const bottomLimit = window.innerHeight - kb - 8;
+        const rect = el.getBoundingClientRect();
+        if (rect.bottom > bottomLimit) scroller.scrollTop += rect.bottom - bottomLimit;
+        else if (rect.top < topLimit) scroller.scrollTop -= topLimit - rect.top;
       };
       const queuePin = () => {
         if (pinQueued) return;
@@ -2051,6 +2077,11 @@
       };
       window.visualViewport.addEventListener('resize', queuePin);
       window.visualViewport.addEventListener('scroll', queuePin);
+      document.addEventListener('focusin', () => {
+        if (!document.documentElement.classList.contains('un-kb')) return;
+        pinFocusedInput(); // preempt the native reveal in the same task
+        queuePin();        // and re-check after layout / any native scroll
+      });
     }
 
     // (The hand-rolled delegated touch swipe engine that used to live here is
