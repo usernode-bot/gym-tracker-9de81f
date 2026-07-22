@@ -2093,6 +2093,36 @@
         clearTimeout(pinTimer);
         pinFocusedInput();
       });
+      // Own the reveal outright on touch: the residual stutter was the
+      // browser's native reveal-on-focus still running on every real tap —
+      // even one corrective pin after it makes two visible motions. So the
+      // tap that WOULD focus a text field never reaches the browser's
+      // focus path: cancel it at touchend and focus ourselves with
+      // preventScroll. The native reveal never runs; the pin (touchend →
+      // immediate for hops, viewport-settle for cold opens) is the ONLY
+      // scroll. Scoped tightly: text-entry fields inside #scroll only
+      // (checkbox switches, buttons and sheet fields keep native taps),
+      // never a scroll-drag that ends on a field, and never a caret/
+      // selection tap on the already-focused field.
+      const TEXT_TYPES = new Set(['text', 'number', 'search', 'email', 'url', 'tel', 'password']);
+      let touchMoved = false, touchStartY = 0;
+      document.addEventListener('touchstart', (e) => {
+        touchMoved = false;
+        if (e.touches.length) touchStartY = e.touches[0].clientY;
+      }, { capture: true, passive: true });
+      document.addEventListener('touchmove', (e) => {
+        if (e.touches.length && Math.abs(e.touches[0].clientY - touchStartY) > 8) touchMoved = true;
+      }, { capture: true, passive: true });
+      document.addEventListener('touchend', (e) => {
+        if (touchMoved || e.touches.length) return;
+        const t = e.target;
+        if (!t || t === document.activeElement) return;
+        const isText = t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && TEXT_TYPES.has(t.type));
+        if (!isText || t.disabled || t.readOnly || !t.closest('#scroll')) return;
+        e.preventDefault(); // cancels the click and the native focus+reveal
+        t.focus({ preventScroll: true });
+        pinFocusedInput();
+      }, { passive: false });
     }
 
     // (The hand-rolled delegated touch swipe engine that used to live here is
