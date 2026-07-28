@@ -119,11 +119,25 @@
       bottom: var(--un-kb-inset, 0px);
       padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
     }
-    .kb-bottom-4 { bottom: calc(1rem + var(--un-kb-inset, 0px) + env(safe-area-inset-bottom, 0px)); }
     .kb-bottom-16 { bottom: calc(4rem + var(--un-kb-inset, 0px) + env(safe-area-inset-bottom, 0px)); }
     @media (prefers-reduced-motion: no-preference) {
-      .sheet, .kb-bottom-4, .kb-bottom-16 { transition: bottom 150ms ease-out; }
+      .sheet, .kb-bottom-16 { transition: bottom 150ms ease-out; }
     }
+    /* The rest dock is the ONE bottom-anchored surface that deliberately
+       does NOT consume --un-kb-inset (issue #36): it's a passive readout,
+       so lifting it above the keyboard parked it over the very field being
+       typed into. It is anchored to the safe area, never transitions, and
+       lives in <body> (not inside #app) so a re-render or a kit push/pop
+       view transition can't move or re-mount it. While the keyboard is up
+       (html.un-kb, set by the kit whenever the inset is non-zero) it steps
+       out of the way entirely — the elapsed time keeps running, tick() just
+       updates an invisible readout. view-transition-name keeps the kit's
+       root slide from dragging it along. */
+    .rest-dock {
+      bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+      view-transition-name: un-rest-dock;
+    }
+    html.un-kb .rest-dock { opacity: 0; pointer-events: none; }
 
     /* ── usernode-native kit integration ─────────────────────────────── */
     /* Theme the kit to the app's violet; radius matches rounded-xl. */
@@ -170,6 +184,14 @@
   <div id="undo-toast" class="hidden fixed kb-bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
     <span id="undo-toast-msg"></span>
     <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
+  </div>
+  <!-- Rest stopwatch dock: body-level and permanent so it stays put across
+       re-renders and view transitions; render() only toggles `hidden`. -->
+  <div id="rest-dock" class="rest-dock hidden fixed left-1/2 -translate-x-1/2 z-10">
+    <button data-action="reset-stopwatch" title="Tap to reset" class="flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg">
+      <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
+      <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
+    </button>
   </div>
 
   <script>
@@ -518,10 +540,10 @@
       const noteHtml = editingNote === en.id
         ? `<input id="entry-note-input" data-entry="${en.id}" value="${esc(en.note || '')}" placeholder="Add a note…" maxlength="500" autocomplete="off" class="${inp} w-full mt-1.5">`
         : en.note
-          ? `<button data-action="add-note" data-entry="${en.id}" class="block w-full text-left mt-1 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(en.note)}</button>`
+          ? `<button data-action="add-note" data-entry="${en.id}" data-note="entry" class="block w-full text-left mt-1 text-sm italic leading-snug whitespace-pre-wrap break-words text-amber-700 dark:text-amber-200/80">${esc(en.note)}</button>`
           : `<button data-action="add-note" data-entry="${en.id}" class="un-touch-target mt-0.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       const lt = en.last_time
-        ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono">${esc(fmtSetList(en.last_time.sets))}</span></div>`
+        ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono break-words">${esc(fmtSetList(en.last_time.sets))}</span></div>`
         : '';
       // Drop sets chain onto the previous set: they don't advance the set
       // number and show a ↘ marker in the number slot instead.
@@ -531,8 +553,10 @@
         if (openForm && openForm.setId === s.id) return setFormHtml();
         return `<button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
             <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
-            <span class="font-mono">${esc(fmtSet(s))}</span>
-            ${s.note ? `<span class="text-xs italic text-zinc-500 truncate">${esc(s.note)}</span>` : ''}
+            <span class="flex-1 min-w-0">
+              <span class="font-mono">${esc(fmtSet(s))}</span>
+              ${s.note ? `<span data-note="set" class="block text-xs italic text-zinc-500 leading-snug whitespace-pre-wrap break-words mt-0.5">${esc(s.note)}</span>` : ''}
+            </span>
           </button>`;
       }).join('');
       const addArea = openForm && openForm.entryId === en.id && !openForm.setId
@@ -540,8 +564,8 @@
         : `<button data-action="open-add-set" data-entry="${en.id}" class="un-touch-target mt-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
       return `<div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
           <div class="flex items-center justify-between gap-2">
-            <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 truncate hover:text-violet-700 dark:hover:text-violet-300">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
-            <button data-action="delete-entry" data-entry="${en.id}" class="x-delete un-touch-target text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
+            <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 break-words hover:text-violet-700 dark:hover:text-violet-300">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
+            <button data-action="delete-entry" data-entry="${en.id}" class="x-delete un-touch-target shrink-0 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
           </div>
           ${noteHtml}
           ${lt}
@@ -620,18 +644,14 @@
       const sNote = editingSessionNote
         ? `<input id="session-note-input" value="${esc(session.note || '')}" placeholder="Add a workout note…" maxlength="500" autocomplete="off" class="${inp} w-full mb-3">`
         : session.note
-          ? `<button data-action="session-note" class="block w-full text-left mb-3 text-sm italic text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
+          ? `<button data-action="session-note" data-note="session" class="block w-full text-left mb-3 text-sm italic leading-snug whitespace-pre-wrap break-words text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
           : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       return `
         ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
         ${sNote}
         <div class="space-y-3">${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
-        ${!hasKit() && picker ? pickerHtml() : ''}
-        <button data-action="reset-stopwatch" title="Tap to reset" class="fixed kb-bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg z-10">
-          <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
-          <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
-        </button>`;
+        ${!hasKit() && picker ? pickerHtml() : ''}`;
     }
 
     // Small "reps"/"time" chip shown wherever an exercise's fixed type helps
@@ -1174,7 +1194,7 @@
             <div data-swipe="hist:${s.session_id}" class="${histRowCls}">
               <button data-action="open-session" data-id="${s.session_id}" class="flex-1 text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
                 <div class="text-sm font-medium">${fmtDateShort(s.started_at)}</div>
-                <div class="text-xs font-mono text-zinc-500 truncate mt-0.5">${esc(fmtSetList(s.sets))}</div>
+                <div class="text-xs font-mono text-zinc-500 break-words leading-snug mt-0.5">${esc(fmtSetList(s.sets))}</div>
               </button>
               <button data-action="delete-history-entry" data-session="${s.session_id}" class="x-delete un-touch-target px-3 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400" title="Delete this exercise from that workout">✕</button>
             </div>`).join('');
@@ -1241,7 +1261,7 @@
           const n = counts.get(x.id) || 0;
           const e1 = strength.perExercise.get(x.id);
           return `<button data-action="open-exercise-chart" data-id="${x.id}" class="w-full flex items-baseline justify-between gap-2 text-left px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60">
-            <span class="text-sm font-medium truncate">${esc(x.name)}</span>
+            <span class="text-sm font-medium min-w-0 break-words">${esc(x.name)}</span>
             <span class="text-xs text-zinc-500 shrink-0">${n} set${n === 1 ? '' : 's'}${e1 ? ' · ' + fmtMetricVal('e1rm', e1) + ' ' + weightUnit + ' e1RM' : ''}</span>
           </button>`;
         }).join('');
@@ -1343,6 +1363,11 @@
       // animation on high-frequency updates (toggles, typing, undo commits).
       const nav = pendingNav;
       pendingNav = null;
+      // The dock lives outside #app, so it's shown/hidden here rather than
+      // being re-emitted by the view's HTML. Toggled outside the transition
+      // callback so it never joins the root slide.
+      const dock = document.getElementById('rest-dock');
+      if (dock) dock.classList.toggle('hidden', view !== 'session');
       const apply = () => {
         const html = view === 'home' ? homeHtml()
           : view === 'session' ? sessionHtml()

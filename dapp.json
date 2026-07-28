@@ -48,6 +48,10 @@
     { "name": "Inset-grouped session list on home", "path": "/?demo=1", "expectSelector": ".un-group" },
     { "name": "Drop-set switch renders in the set form", "path": "/?demo=1&session=900002&addset=1", "expectSelector": ".un-switch" },
     { "name": "Fixed app shell (static keyboard layout)", "path": "/", "expectSelector": "#scroll" },
-    { "name": "Staging tester sees copied demo workouts", "path": "/", "expectText": "Staging demo" }
+    { "name": "Staging tester sees copied demo workouts", "path": "/", "expectText": "Staging demo" },
+    { "name": "Rest timer is a fixed body-level dock", "path": "/", "expectSelector": "#rest-dock" },
+    { "name": "Rest readout renders in a session", "path": "/?demo=1&session=900002", "expectSelector": "#stopwatch" },
+    { "name": "Long exercise note renders in full", "path": "/?demo=1&session=900002", "expectText": "stop two reps short of failure on every working set" },
+    { "name": "Notes render as wrapping paragraphs", "path": "/?demo=1&session=900002", "expectSelector": "[data-note=\"entry\"]" }
   ]
 }
