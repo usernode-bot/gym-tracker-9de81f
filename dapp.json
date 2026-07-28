@@ -1,6 +1,8 @@
 {
   "name": "Gym Tracker",
-  "icon": { "emoji": "🏋️" },
+  "icon": {
+    "emoji": "🏋️"
+  },
   "secrets": [],
   "tests": [
     { "name": "Home renders with demo data", "path": "/?demo=1", "expectText": "Staging demo" },
@@ -53,5 +55,8 @@
     { "name": "Rest readout renders in a session", "path": "/?demo=1&session=900002", "expectSelector": "#stopwatch" },
     { "name": "Long exercise note renders in full", "path": "/?demo=1&session=900002", "expectText": "stop two reps short of failure on every working set" },
     { "name": "Notes render as wrapping paragraphs", "path": "/?demo=1&session=900002", "expectSelector": "[data-note=\"entry\"]" }
+  ],
+  "admins": [
+    "evan"
   ]
 }
