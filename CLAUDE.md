@@ -102,7 +102,14 @@ view. All workout data is strictly private per user.
 - The legacy `presses` table from the scaffold demo is unused — don't
   recreate it, but don't `DROP` it either (prod data is left alone).
 - The rest stopwatch is deliberately client-side only (no schema, no
-  API) and counts **up**; a countdown timer is future work.
+  API) and counts **up**; a countdown timer is future work. It lives in
+  a permanent body-level `#rest-dock` (outside `#app`, shown/hidden by
+  `render()` for the session view) — the one bottom-anchored surface
+  that deliberately does **not** consume `--un-kb-inset` and never
+  transitions; `html.un-kb` fades it out while the keyboard is up, so
+  it can't cover the field being typed into (issue #36). Notes
+  (session, entry, set) wrap as paragraphs — `whitespace-pre-wrap
+  break-words`, never `truncate`.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,

@@ -1209,7 +1209,12 @@ async function seedStagingDemo() {
       (900025, 900012, 900009, NULL, NOW() - INTERVAL '7 days' + INTERVAL '15 minutes'),
       (900026, 900013, 900008, NULL, NOW() - INTERVAL '4 days'),
       (900027, 900013, 900010, NULL, NOW() - INTERVAL '4 days' + INTERVAL '12 minutes'),
-      (900028, 900013, 900011, NULL, NOW() - INTERVAL '4 days' + INTERVAL '22 minutes')
+      (900028, 900013, 900011, NULL, NOW() - INTERVAL '4 days' + INTERVAL '22 minutes'),
+      -- Entry 900029 carries a deliberately long note so the newest demo
+      -- session shows notes wrapping as a paragraph (issue #36). Push-ups at
+      -- 0 kg keep every strength level unchanged, and because entries sort by
+      -- created_at it lands last in the session.
+      (900029, 900002, 900005, 'Staging demo long note — a deliberately long exercise note that exists to check details wrap into a readable paragraph instead of being cut off after one line: keep the elbows tucked, pause for a second at the chest, and stop two reps short of failure on every working set', NOW() - INTERVAL '2 hours' + INTERVAL '30 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
@@ -1235,7 +1240,8 @@ async function seedStagingDemo() {
       (900022, 900003, 'reps', 5, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '2 hours' + INTERVAL '8 minutes'),
       (900019, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days'),
       (900020, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '3 minutes'),
-      (900021, 900011, 'reps', 6, 75,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '6 minutes')
+      (900021, 900011, 'reps', 6, 75,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '6 minutes'),
+      (900119, 900029, 'reps', 12, 0,   NULL, NULL,      NULL,    FALSE, 'Staging demo long set note — slow eccentric on all twelve reps with the shoulder blades pinned down, plus a two second pause at the bottom of the final rep, which is more than one line of text on a phone', NOW() - INTERVAL '2 hours' + INTERVAL '31 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   // Sessions 900010–900013 flesh out the last three weeks with a pull/press
