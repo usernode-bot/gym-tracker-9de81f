@@ -134,10 +134,32 @@
        updates an invisible readout. view-transition-name keeps the kit's
        root slide from dragging it along. */
     .rest-dock {
-      bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+      bottom: calc(1rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)));
       view-transition-name: un-rest-dock;
     }
     html.un-kb .rest-dock { opacity: 0; pointer-events: none; }
+
+    /* The expanded rest control (issue #40). The dock stays the anchor —
+       the pill and the card are siblings inside it and only `hidden`
+       toggles, so #stopwatch is in the DOM in both states and the drag
+       gesture is never re-mounted by an #app re-render. */
+    #rest-backdrop { background: var(--un-backdrop, rgba(0, 0, 0, 0.4)); }
+    @media (prefers-reduced-motion: no-preference) {
+      #rest-card { animation: rest-card-in 180ms ease-out; }
+    }
+    @keyframes rest-card-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.97); }
+      to   { opacity: 1; transform: none; }
+    }
+    /* The dial owns its pointer stream: no page pan, no text selection,
+       no long-press callout while dragging the knob. */
+    #rest-dial {
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+    #rest-dial:focus-visible { outline: 2px solid var(--un-accent, #7c3aed); outline-offset: 4px; }
 
     /* ── usernode-native kit integration ─────────────────────────────── */
     /* Theme the kit to the app's violet; radius matches rounded-xl. */
@@ -185,13 +207,22 @@
     <span id="undo-toast-msg"></span>
     <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
   </div>
-  <!-- Rest stopwatch dock: body-level and permanent so it stays put across
-       re-renders and view transitions; render() only toggles `hidden`. -->
-  <div id="rest-dock" class="rest-dock hidden fixed left-1/2 -translate-x-1/2 z-10">
-    <button data-action="reset-stopwatch" title="Tap to reset" class="flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg">
-      <span class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
-      <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
-    </button>
+  <!-- Rest timer dock: body-level and permanent so it stays put across
+       re-renders and view transitions; render() only toggles `hidden`.
+       The collapsed pill and the expanded card (issue #40) are siblings
+       here — renderRestDock() toggles `hidden` between them, so the
+       #stopwatch readout exists in both states and the dial's pointer
+       handlers survive every #app re-render. -->
+  <div id="rest-backdrop" class="hidden fixed inset-0 z-40" data-action="rest-backdrop"></div>
+  <div id="rest-dock" class="rest-dock hidden fixed left-1/2 -translate-x-1/2 z-10 w-full max-w-md px-4">
+    <div id="rest-pill" class="flex justify-center">
+      <button data-action="toggle-rest-panel" title="Tap for timer options" class="flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg overflow-hidden relative">
+        <span id="rest-label" class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
+        <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
+        <span class="absolute left-0 bottom-0 h-[2px] bg-violet-500 transition-none" data-rest-progress style="width: 0%"></span>
+      </button>
+    </div>
+    <div id="rest-card" class="hidden rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-2xl p-4"></div>
   </div>
 
   <script>
@@ -220,6 +251,9 @@
     let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
     let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
+    let restTargetSec = 120;   // rest target in seconds (30..600, multiple of 30) — set below from localStorage
+    let restExpanded = false;  // the expanded rest control card is open
+    let restNotified = false;  // the end-of-rest cue already fired for this rest
     let toastTimer = null;
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set'|'hist', id, entryIds, timer } — deferred swipe delete in its undo window ('hist' = history row keyed by session id, deleting its entryIds)
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
@@ -257,6 +291,31 @@
       if (themeMq.addEventListener) themeMq.addEventListener('change', onSystemChange);
       else if (themeMq.addListener) themeMq.addListener(onSystemChange);
     }
+
+    // ---------- rest target duration (client-side only, per device) ----------
+    // Same shape as the theme preference: localStorage, validated on read,
+    // try/catch on both sides so a blocked-cookies context can't throw (a
+    // console error there would fail every proposal check on the route).
+    // Deliberately NOT in user_settings — the rest timer has no server state.
+    const REST_TARGET_KEY = 'gym-tracker-rest-target';
+    const REST_MIN_SEC = 30, REST_MAX_SEC = 600, REST_STEP_SEC = 30, REST_DEFAULT_SEC = 120;
+    function clampRestTarget(n) {
+      if (!Number.isFinite(n)) return REST_DEFAULT_SEC;
+      const snapped = Math.round(n / REST_STEP_SEC) * REST_STEP_SEC;
+      return Math.min(REST_MAX_SEC, Math.max(REST_MIN_SEC, snapped));
+    }
+    function getRestTarget() {
+      try {
+        const n = parseInt(localStorage.getItem(REST_TARGET_KEY) || '', 10);
+        if (Number.isFinite(n) && n >= REST_MIN_SEC && n <= REST_MAX_SEC && n % REST_STEP_SEC === 0) return n;
+      } catch (_) {}
+      return REST_DEFAULT_SEC;
+    }
+    function setRestTarget(sec) {
+      restTargetSec = clampRestTarget(sec);
+      try { localStorage.setItem(REST_TARGET_KEY, String(restTargetSec)); } catch (_) {}
+    }
+    restTargetSec = getRestTarget();
 
     // ---------- helpers ----------
     function esc(s) {
@@ -1367,7 +1426,12 @@
       // being re-emitted by the view's HTML. Toggled outside the transition
       // callback so it never joins the root slide.
       const dock = document.getElementById('rest-dock');
-      if (dock) dock.classList.toggle('hidden', view !== 'session');
+      if (dock) {
+        dock.classList.toggle('hidden', view !== 'session');
+        // Leaving the session can't strand an open panel or its backdrop.
+        if (view !== 'session') restExpanded = false;
+        renderRestDock();
+      }
       const apply = () => {
         const html = view === 'home' ? homeHtml()
           : view === 'session' ? sessionHtml()
@@ -1845,7 +1909,8 @@
           openForm = null;
         } else {
           await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
-          stopwatchStart = Date.now(); // logging a set (re)starts the rest stopwatch
+          stopwatchStart = Date.now(); // logging a set (re)starts the rest timer
+          restNotified = false; // ...and this rest gets to announce its own end
           openForm = null; // close on success; the next "+ Add set" prefills from this set
         }
         await refreshSession();
@@ -1899,7 +1964,11 @@
       render();
     }
 
-    // ---------- stopwatch (client-side only) ----------
+    // ---------- rest timer (client-side only: no schema, no API) ----------
+    // stopwatchStart is the epoch ms the current rest began (last logged set,
+    // a manual Reset, or a resumed in-flight rest); restTargetSec is what it
+    // counts down to. Everything else — remaining, overtime, progress — is
+    // derived, so nothing extra is stored and a clock skew can't drift.
     function seedStopwatch() {
       let newest = 0;
       for (const en of session.entries) {
@@ -1909,16 +1978,262 @@
         }
       }
       stopwatchStart = newest && Date.now() - newest < 30 * 60 * 1000 ? newest : null;
+      // A resumed rest can arrive already past its target — render the over
+      // state, but don't fire a stale "Rest's up" for a rest that ended
+      // before this screen even opened.
+      restNotified = !!stopwatchStart && Date.now() - stopwatchStart >= restTargetSec * 1000;
     }
+    function restElapsed() {
+      return stopwatchStart ? Math.floor((Date.now() - stopwatchStart) / 1000) : 0;
+    }
+    // The pill/card readout for the current state: idle, counting down, or
+    // over-running. fmtDur handles m:ss for all three.
+    function restReadout() {
+      if (!stopwatchStart) return { text: '—:—', label: 'Rest', over: false, pct: 0 };
+      const elapsed = restElapsed();
+      const remaining = restTargetSec - elapsed;
+      return {
+        text: remaining > 0 ? fmtDur(remaining) : '+' + fmtDur(-remaining),
+        label: remaining > 0 ? 'Rest' : 'Over',
+        over: remaining <= 0,
+        pct: Math.min(100, Math.round((elapsed / restTargetSec) * 100)),
+      };
+    }
+    function buzz(pattern) {
+      try { if ('vibrate' in navigator) navigator.vibrate(pattern); } catch (_) {}
+    }
+    // tick() runs at 1 Hz and must stay a pure readout update — textContent
+    // and the progress width only. Touching the dial's DOM here would yank
+    // the knob out from under a finger mid-drag.
     function tick() {
       const el = document.getElementById('stopwatch');
       if (!el) return;
-      if (!stopwatchStart) { el.textContent = '—:—'; return; }
-      const s = Math.floor((Date.now() - stopwatchStart) / 1000);
-      if (s >= 3600) { stopwatchStart = null; el.textContent = '—:—'; return; }
-      el.textContent = fmtDur(s);
+      // The rest gives up after an hour, same as before the target existed.
+      if (stopwatchStart && restElapsed() >= 3600) {
+        stopwatchStart = null;
+        restNotified = false;
+        renderRestDock();
+        return;
+      }
+      const r = restReadout();
+      const wasOver = el.dataset.over === '1';
+      el.textContent = r.text;
+      const lbl = document.getElementById('rest-label');
+      if (lbl) lbl.textContent = r.label;
+      for (const bar of document.querySelectorAll('[data-rest-progress]')) {
+        bar.style.width = r.pct + '%';
+      }
+      const big = document.getElementById('rest-big');
+      if (big) big.textContent = r.text;
+      const sub = document.getElementById('rest-sub');
+      if (sub) sub.textContent = restSubText();
+      const kick = document.getElementById('rest-kicker');
+      if (kick) kick.textContent = restKicker();
+      // Crossing zero: restyle once (not every tick) and fire the cue.
+      if (r.over !== wasOver) {
+        el.dataset.over = r.over ? '1' : '0';
+        paintRestOver(r.over);
+      }
+      if (r.over && stopwatchStart && !restNotified) {
+        restNotified = true;
+        buzz([40, 60, 40]);
+        toast('Rest’s up — ' + fmtDur(restTargetSec), true);
+      }
+    }
+    // The over state is a colour swap on surfaces tick() is allowed to touch.
+    function paintRestOver(over) {
+      const el = document.getElementById('stopwatch');
+      const lbl = document.getElementById('rest-label');
+      if (el) el.classList.toggle('text-violet-600', over);
+      if (el) el.classList.toggle('dark:text-violet-400', over);
+      if (lbl) lbl.classList.toggle('text-violet-600', over);
+      if (lbl) lbl.classList.toggle('dark:text-violet-400', over);
+      const big = document.getElementById('rest-big');
+      if (big) {
+        big.classList.toggle('text-violet-600', over);
+        big.classList.toggle('dark:text-violet-400', over);
+      }
+    }
+    function restKicker() {
+      if (!stopwatchStart) return 'Rest timer';
+      return restTargetSec - restElapsed() > 0 ? 'Resting' : 'Over';
+    }
+    function restSubText() {
+      if (!stopwatchStart) return 'No rest running · ' + fmtDur(restTargetSec) + ' target';
+      return fmtDur(restElapsed()) + ' elapsed · ' + fmtDur(restTargetSec) + ' target';
+    }
+    // Repaints everything a target change moves — knob, fill, value, aria,
+    // readout — WITHOUT re-rendering the card. Dragging the dial or tapping
+    // ±30s must not swap the controls out from under the finger (or drop the
+    // dial's keyboard focus), so nothing here touches innerHTML.
+    function paintRestTarget() {
+      const dial = document.getElementById('rest-dial');
+      if (dial) {
+        const pos = (restTargetSec - REST_MIN_SEC) / (REST_MAX_SEC - REST_MIN_SEC) * 100;
+        const knob = dial.querySelector('[data-rest-knob]');
+        const fill = dial.querySelector('[data-rest-fill]');
+        if (knob) knob.style.left = pos + '%';
+        if (fill) fill.style.width = pos + '%';
+        dial.setAttribute('aria-valuenow', String(restTargetSec));
+        dial.setAttribute('aria-valuetext', fmtDur(restTargetSec));
+      }
+      const v = document.querySelector('[data-rest-value]');
+      if (v) v.textContent = fmtDur(restTargetSec);
+      tick(); // remaining recomputes against the SAME start — no restart
+    }
+    // The one place a target change is applied: persist, re-arm the cue if the
+    // in-flight rest is back under the new target, buzz, repaint.
+    function commitRestTarget(sec) {
+      if (clampRestTarget(sec) === restTargetSec) return false;
+      setRestTarget(sec);
+      if (restTargetSec - restElapsed() > 0) restNotified = false;
+      buzz(10);
+      paintRestTarget();
+      return true;
+    }
+
+    // The expanded control's markup. Reset/Cancel/the dial render in BOTH the
+    // idle and running states (Reset reads "Start" when idle, Cancel is
+    // aria-disabled) so their selectors exist regardless of timer state.
+    function restCardHtml() {
+      const r = restReadout();
+      const running = !!stopwatchStart;
+      const pos = (restTargetSec - REST_MIN_SEC) / (REST_MAX_SEC - REST_MIN_SEC) * 100;
+      const ticks = [];
+      for (let s = REST_MIN_SEC; s <= REST_MAX_SEC; s += REST_STEP_SEC) {
+        const p = (s - REST_MIN_SEC) / (REST_MAX_SEC - REST_MIN_SEC) * 100;
+        const major = s % 120 === 0;
+        ticks.push(`<span class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full ${major ? 'w-[3px] h-3 bg-zinc-400 dark:bg-zinc-500' : 'w-[2px] h-2 bg-zinc-300 dark:bg-zinc-600'}" style="left: ${p}%"></span>`);
+      }
+      const overCls = r.over ? 'text-violet-600 dark:text-violet-400' : '';
+      return `
+        <button data-action="toggle-rest-panel" class="w-full text-center" title="Tap to collapse">
+          <div id="rest-kicker" class="text-[10px] uppercase tracking-widest text-zinc-500">${restKicker()}</div>
+          <div id="rest-big" class="font-mono text-4xl tabular-nums leading-tight ${overCls}">${r.text}</div>
+          <div id="rest-sub" class="text-xs text-zinc-500 mt-0.5">${restSubText()}</div>
+        </button>
+        <div class="mt-4">
+          <div class="flex items-baseline justify-between">
+            <span class="text-[10px] uppercase tracking-widest text-zinc-500">Timer length</span>
+            <span data-rest-value class="font-mono text-lg tabular-nums">${fmtDur(restTargetSec)}</span>
+          </div>
+          <div class="flex items-center gap-3 mt-2">
+            <button data-action="rest-step" data-delta="-30" aria-label="30 seconds shorter" class="shrink-0 w-11 h-11 rounded-full border border-zinc-200 dark:border-zinc-700 text-sm font-semibold text-zinc-600 dark:text-zinc-300 ${hasKit() ? 'un-touch-target' : ''}">−30s</button>
+            <div id="rest-dial" data-rest-dial role="slider" tabindex="0"
+                 aria-label="Rest timer length"
+                 aria-valuemin="${REST_MIN_SEC}" aria-valuemax="${REST_MAX_SEC}"
+                 aria-valuenow="${restTargetSec}" aria-valuetext="${fmtDur(restTargetSec)}"
+                 class="relative flex-1 h-11 cursor-pointer">
+              <span class="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-zinc-200 dark:bg-zinc-700"></span>
+              <span data-rest-fill class="absolute left-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-violet-500" style="width: ${pos}%"></span>
+              ${ticks.join('')}
+              <span data-rest-knob class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-white dark:bg-zinc-800 border-2 border-violet-500 shadow-md" style="left: ${pos}%"></span>
+            </div>
+            <button data-action="rest-step" data-delta="30" aria-label="30 seconds longer" class="shrink-0 w-11 h-11 rounded-full border border-zinc-200 dark:border-zinc-700 text-sm font-semibold text-zinc-600 dark:text-zinc-300 ${hasKit() ? 'un-touch-target' : ''}">+30s</button>
+          </div>
+          <div class="flex justify-between text-[10px] text-zinc-400 mt-1 px-0.5">
+            <span>${fmtDur(REST_MIN_SEC)}</span><span>${fmtDur(REST_MAX_SEC)}</span>
+          </div>
+        </div>
+        <div class="flex gap-2 mt-4">
+          <button data-action="rest-reset" class="flex-1 py-2.5 rounded-xl bg-violet-600 text-white font-semibold">${running ? 'Reset' : 'Start'}</button>
+          <button data-action="rest-cancel" ${running ? '' : 'aria-disabled="true"'} class="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 font-semibold ${running ? 'text-zinc-700 dark:text-zinc-200' : 'text-zinc-400 dark:text-zinc-600'}">Cancel</button>
+        </div>`;
+    }
+
+    // Owns the dock's inner markup. Called only on STATE changes (expand,
+    // collapse, reset, cancel, target change, idle↔running) — never from
+    // tick(), which would re-mount the dial mid-drag.
+    function renderRestDock() {
+      const dock = document.getElementById('rest-dock');
+      const pill = document.getElementById('rest-pill');
+      const card = document.getElementById('rest-card');
+      const backdrop = document.getElementById('rest-backdrop');
+      if (!dock || !pill || !card || !backdrop) return;
+      const open = restExpanded && view === 'session';
+      pill.classList.toggle('hidden', open);
+      card.classList.toggle('hidden', !open);
+      backdrop.classList.toggle('hidden', !open || dock.classList.contains('hidden'));
+      // The backdrop needs to sit above app content while open; collapsed,
+      // the pill drops back under it (undo pill z-40, error toast z-50).
+      dock.classList.toggle('z-40', open);
+      dock.classList.toggle('z-10', !open);
+      card.innerHTML = open ? restCardHtml() : '';
+      if (open) wireRestDial();
+      tick();
+    }
+
+    // Hand-rolled 30s-step dial: the kit ships no slider, so this is Pointer
+    // Events with capture, snapping on every move (1:1 tracking with snap —
+    // never free-track then snap on release), and the kit's gesture lock so
+    // it can't fight pull-to-refresh / swipe rows / sheet drags.
+    function wireRestDial() {
+      const dial = document.getElementById('rest-dial');
+      if (!dial) return;
+      let dragging = false, claimed = false, seq = null, startX = 0;
+      const token = { rest: true };
+      const valueFromX = (clientX) => {
+        const rect = dial.getBoundingClientRect();
+        if (!rect.width) return restTargetSec;
+        const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+        return clampRestTarget(REST_MIN_SEC + frac * (REST_MAX_SEC - REST_MIN_SEC));
+      };
+      dial.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        claimed = false;
+        startX = e.clientX;
+        seq = e.pointerType === 'touch' ? 'touch' : e.pointerId;
+        try { dial.setPointerCapture(e.pointerId); } catch (_) {}
+        commitRestTarget(valueFromX(e.clientX)); // tap the track to jump there
+        e.preventDefault();
+      });
+      dial.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        // Claim the shared intent lock only once movement passes the
+        // threshold, per the kit's gesture-arbiter contract.
+        if (!claimed && Math.abs(e.clientX - startX) > 6) {
+          if (hasKit() && unNative.gestures) {
+            if (unNative.gestures.claim(seq, token) === false) { dragging = false; return; }
+          }
+          claimed = true;
+        }
+        commitRestTarget(valueFromX(e.clientX));
+      });
+      const end = () => {
+        if (!dragging) return;
+        dragging = false;
+        if (claimed && hasKit() && unNative.gestures) {
+          try { unNative.gestures.release(seq); } catch (_) {}
+        }
+        claimed = false;
+      };
+      dial.addEventListener('pointerup', end);
+      dial.addEventListener('pointercancel', end);
+      dial.addEventListener('keydown', (e) => {
+        let next = null;
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = restTargetSec - REST_STEP_SEC;
+        else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = restTargetSec + REST_STEP_SEC;
+        else if (e.key === 'Home') next = REST_MIN_SEC;
+        else if (e.key === 'End') next = REST_MAX_SEC;
+        if (next === null) return;
+        e.preventDefault();
+        commitRestTarget(next);
+      });
     }
     setInterval(tick, 1000);
+
+    // Escape collapses the expanded control (desktop).
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && restExpanded) { restExpanded = false; renderRestDock(); }
+    });
+    // The dock deliberately doesn't ride above the keyboard (issue #36), so
+    // html.un-kb makes it invisible — collapse rather than leave an unseen
+    // backdrop eating taps.
+    document.addEventListener('focusin', (e) => {
+      if (!restExpanded) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { restExpanded = false; renderRestDock(); }
+    });
 
     // ---------- deferred delete (swipe on touch, X buttons on desktop) ----------
     // Deferred delete: the row is hidden immediately, but the DELETE request
@@ -2086,7 +2401,7 @@
       if (!el) return;
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
-      if ((action === 'close-picker' || action === 'close-import' || action === 'close-export' || action === 'close-muscle-editor' || action === 'close-bw-editor') && e.target !== el) return;
+      if ((action === 'close-picker' || action === 'close-import' || action === 'close-export' || action === 'close-muscle-editor' || action === 'close-bw-editor' || action === 'rest-backdrop') && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
@@ -2373,9 +2688,32 @@
           }
           break;
         }
-        case 'reset-stopwatch':
+        // ---------- rest timer (issue #40) ----------
+        case 'toggle-rest-panel':
+          restExpanded = !restExpanded;
+          renderRestDock();
+          break;
+        case 'rest-backdrop':
+          restExpanded = false;
+          renderRestDock();
+          break;
+        // Reset (running) / Start (idle) — what a tap on the pill used to do
+        // before it expanded instead. The card stays open so the length can be
+        // adjusted right after.
+        case 'rest-reset':
           stopwatchStart = Date.now();
-          tick();
+          restNotified = false;
+          renderRestDock();
+          break;
+        case 'rest-cancel':
+          if (!stopwatchStart) { restExpanded = false; renderRestDock(); break; }
+          stopwatchStart = null;
+          restNotified = false;
+          restExpanded = false;
+          renderRestDock();
+          break;
+        case 'rest-step':
+          commitRestTarget(restTargetSec + parseInt(el.dataset.delta || '0', 10));
           break;
         case 'set-theme':
           setThemePref(el.dataset.theme);
@@ -2464,6 +2802,16 @@
           if (params.get('addset') === '1' && session && session.entries.length) {
             const en = session.entries.find((x) => x.sets.length) || session.entries[0];
             await handle('open-add-set', { dataset: { entry: String(en.id) } });
+          }
+          // &rest=1 arms the rest timer and opens its expanded card — the
+          // demo session's newest set is hours old, so seedStopwatch() leaves
+          // the timer idle here. Not gated on the environment: it's a UI
+          // state link, so it behaves identically in production.
+          if (params.get('rest') === '1') {
+            stopwatchStart = Date.now();
+            restNotified = false;
+            restExpanded = true;
+            renderRestDock();
           }
           return;
         } catch (_) {} // unknown/foreign session — fall through to home

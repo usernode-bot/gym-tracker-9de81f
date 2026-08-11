@@ -101,15 +101,33 @@ view. All workout data is strictly private per user.
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't
   recreate it, but don't `DROP` it either (prod data is left alone).
-- The rest stopwatch is deliberately client-side only (no schema, no
-  API) and counts **up**; a countdown timer is future work. It lives in
-  a permanent body-level `#rest-dock` (outside `#app`, shown/hidden by
-  `render()` for the session view) — the one bottom-anchored surface
-  that deliberately does **not** consume `--un-kb-inset` and never
+- **The rest timer is deliberately client-side only** — no schema, no
+  API, no server state. It counts **down** to a target and then keeps
+  going as overtime (`+0:12`), so a missed cue is never lost (issue
+  #40). `stopwatchStart` (epoch ms of the last logged set, a manual
+  Reset, or a resumed in-flight rest) plus `restTargetSec` are the only
+  state; remaining/overtime/progress are derived every tick, and the
+  rest still gives up after an hour. The target is 0:30–10:00 in 30s
+  steps, defaults to 2:00, and persists in `localStorage` under
+  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `user_settings`. Tapping the pill expands it into a card with
+  Reset/Cancel and a hand-rolled draggable dial (the native kit ships
+  no slider): Pointer Events + `setPointerCapture` + `touch-action:
+  none`, snapping to 30s on **every** move, claiming
+  `unNative.gestures` past a 6px threshold, degrading to plain pointer
+  handling with no kit. `tick()` is a pure readout update (textContent
+  + progress width) so a 1 Hz repaint can't yank the knob mid-drag;
+  all structural changes go through `renderRestDock()`.
+  `&rest=1` (with `&session=<id>`) arms the timer and opens the card
+  for the dapp.json checks. The whole thing lives in a permanent
+  body-level `#rest-dock` (outside `#app`, shown/hidden by `render()`
+  for the session view) — the one bottom-anchored surface that
+  deliberately does **not** consume `--un-kb-inset` and never
   transitions; `html.un-kb` fades it out while the keyboard is up, so
-  it can't cover the field being typed into (issue #36). Notes
-  (session, entry, set) wrap as paragraphs — `whitespace-pre-wrap
-  break-words`, never `truncate`.
+  it can't cover the field being typed into (issue #36), and a focused
+  input collapses the card so its backdrop can't eat taps invisibly.
+  Notes (session, entry, set) wrap as paragraphs —
+  `whitespace-pre-wrap break-words`, never `truncate`.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,

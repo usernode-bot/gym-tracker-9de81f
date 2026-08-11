@@ -54,7 +54,11 @@
     { "name": "Rest timer is a fixed body-level dock", "path": "/", "expectSelector": "#rest-dock" },
     { "name": "Rest readout renders in a session", "path": "/?demo=1&session=900002", "expectSelector": "#stopwatch" },
     { "name": "Long exercise note renders in full", "path": "/?demo=1&session=900002", "expectText": "stop two reps short of failure on every working set" },
-    { "name": "Notes render as wrapping paragraphs", "path": "/?demo=1&session=900002", "expectSelector": "[data-note=\"entry\"]" }
+    { "name": "Notes render as wrapping paragraphs", "path": "/?demo=1&session=900002", "expectSelector": "[data-note=\"entry\"]" },
+    { "name": "Expanded rest timer offers Reset", "path": "/?demo=1&session=900002&rest=1", "expectSelector": "[data-action=\"rest-reset\"]" },
+    { "name": "Expanded rest timer offers Cancel", "path": "/?demo=1&session=900002&rest=1", "expectSelector": "[data-action=\"rest-cancel\"]" },
+    { "name": "Rest length dial renders", "path": "/?demo=1&session=900002&rest=1", "expectSelector": "[data-rest-dial]" },
+    { "name": "Rest timer defaults to a 2:00 target", "path": "/?demo=1&session=900002&rest=1", "expectText": "2:00" }
   ],
   "admins": [
     "evan"
