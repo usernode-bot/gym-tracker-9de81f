@@ -936,6 +936,10 @@ app.get('/api/settings', wrap(async (req, res) => {
   res.json({
     weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
     bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    // Reported so the client can honour the ?logset=1 automation hook, which
+    // writes a set and therefore only runs in a preview. No feature of the
+    // app is gated on this.
+    staging: IS_STAGING,
   });
 }));
 

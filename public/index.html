@@ -258,6 +258,15 @@
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set'|'hist', id, entryIds, timer } — deferred swipe delete in its undo window ('hist' = history row keyed by session id, deleting its entryIds)
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
     let pendingNav = null;       // 'push' | 'pop' — consumed by the next render() as a kit screen transition
+    let isStaging = false;       // deploy environment, from GET /api/settings (only gates the ?logset=1 test hook)
+    // Optimistic set saves: a logged set lands in the local session payload
+    // and renders immediately, with the POST/PATCH settling in the
+    // background. Temp ids are negative so they can never collide with a
+    // server id; setSaves tracks the in-flight promises so an action that
+    // needs a real id (edit, delete, leaving the screen) can wait for them.
+    let tempSetSeq = 0;
+    const setSaves = new Set();     // in-flight save promises
+    const setSaveIds = new Map();   // temp id -> server id, once saved
 
     // usernode-native kit presence. The kit script is loaded synchronously in
     // <head>, so this is stable by the time any of the code below runs; every
@@ -610,7 +619,9 @@
       const setRows = en.sets.filter((s) => !isPendingDelete('set', s.id)).map((s) => {
         if (!s.is_drop) setNum++;
         if (openForm && openForm.setId === s.id) return setFormHtml();
-        return `<button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
+        // A set still saving renders in full, just faintly, so the press
+        // reads as done without pretending the write has landed.
+        return `<button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" ${s.pending ? 'data-pending-set="1"' : ''} class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left${s.pending ? ' opacity-60' : ''}">
             <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
             <span class="flex-1 min-w-0">
               <span class="font-mono">${esc(fmtSet(s))}</span>
@@ -1884,11 +1895,17 @@
       return d.weightKg != null && n === kgToUnitNum(d.weightKg) ? d.weightKg : unitToKg(n);
     }
 
+    // Pressing "Log set" used to wait out two round trips (the write, then a
+    // full session re-fetch) before anything moved on screen. Now the row is
+    // applied locally and the form closes on the press; the save settles in
+    // the background and only a failure comes back to the user.
     async function onSetSubmit(e) {
       e.preventDefault();
+      if (!openForm || openForm.saving) return; // a second tap must not log twice
       const d = readDraft(e.target);
       openForm.draft = d;
-      await flushPendingDelete();
+      const entryId = openForm.entryId;
+      const setId = openForm.setId;
       // No set_type: the server derives it from the exercise on create and
       // locks it to the existing shape on edit.
       const body = { side: d.side || null, is_drop: !!d.drop, note: d.note };
@@ -1903,21 +1920,157 @@
         body.duration_seconds = dur;
         body.effort = d.effort;
       }
-      try {
-        if (openForm.setId) {
-          await api('PATCH', '/api/sets/' + openForm.setId, body);
-          openForm = null;
-        } else {
-          await api('POST', '/api/session-exercises/' + openForm.entryId + '/sets', body);
-          stopwatchStart = Date.now(); // logging a set (re)starts the rest timer
-          restNotified = false; // ...and this rest gets to announce its own end
-          openForm = null; // close on success; the next "+ Add set" prefills from this set
-        }
-        await refreshSession();
-      } catch (err) {
-        openForm.error = err.message;
-        render();
+      // A swipe delete still inside its undo window is only worth waiting for
+      // when it would remove the very row (or entry) being written to;
+      // anything else commits alongside the save instead of ahead of it.
+      const pd = pendingDelete;
+      const conflicts = !!pd && (pd.kind === 'session' || pd.kind === 'hist'
+        || (pd.kind === 'entry' && pd.id === entryId)
+        || (pd.kind === 'set' && pd.id === setId));
+      if (conflicts) {
+        openForm.saving = true;
+        try { await flushPendingDelete(); } catch (err) { toast(err.message); }
+        if (!openForm) return; // the flush took the row this form was editing
+        openForm.saving = false;
+      } else if (pd) {
+        flushPendingDelete().catch((err) => toast(err.message));
       }
+      const en = findEntryLocal(entryId);
+      if (!en) { openForm = null; return refreshSession(); }
+      if (setId) startSetEdit(en, setId, body);
+      else startSetCreate(en, body);
+    }
+
+    // ---------- optimistic set saves ----------
+
+    // The server's own normalization of a set body (see buildSetValues), so
+    // a locally-applied row reads exactly like the saved one will.
+    function setRowValues(type, body) {
+      const trim = (v, max) => (String(v == null ? '' : v).trim().slice(0, max) || null);
+      return {
+        set_type: type,
+        reps: type === 'reps' ? body.reps : null,
+        weight: type === 'reps' ? Math.round(body.weight * 100) / 100 : null,
+        duration_seconds: type === 'time' ? body.duration_seconds : null,
+        effort: type === 'time' ? trim(body.effort, 120) : null,
+        side: body.side || null,
+        is_drop: !!body.is_drop,
+        note: trim(body.note, 500),
+      };
+    }
+
+    // Log a new set: show it, then save it. Temp ids are negative so they can
+    // never collide with a server id.
+    function startSetCreate(en, body) {
+      const type = en.exercise_type === 'time' ? 'time' : 'reps';
+      const draft = openForm.draft;
+      const row = Object.assign(
+        { id: --tempSetSeq, session_exercise_id: en.id, created_at: new Date().toISOString(), pending: true },
+        setRowValues(type, body)
+      );
+      en.sets.push(row);
+      stopwatchStart = Date.now(); // logging a set (re)starts the rest timer
+      restNotified = false; // ...and this rest gets to announce its own end
+      openForm = null; // close on the press; the next "+ Add set" prefills from this set
+      render();
+      trackSetSave(
+        api('POST', '/api/session-exercises/' + en.id + '/sets', body).then((saved) => {
+          setSaveIds.set(row.id, saved.id);
+          replaceLocalSet(row.id, saved);
+        }),
+        (err) => {
+          removeLocalSet(row.id);
+          reopenSetForm(en.id, null, draft, saveFailMessage(err));
+        }
+      );
+    }
+
+    // Same idea for an edit: apply the new values in place, keep the old row
+    // as the rollback snapshot.
+    function startSetEdit(en, setId, body) {
+      const i = en.sets.findIndex((s) => s.id === setId);
+      if (i < 0) { openForm = null; return refreshSession(); }
+      const before = Object.assign({}, en.sets[i]);
+      const draft = openForm.draft;
+      en.sets[i] = Object.assign({}, before, setRowValues(before.set_type, body), { pending: true });
+      openForm = null;
+      render();
+      trackSetSave(
+        api('PATCH', '/api/sets/' + setId, body).then((saved) => replaceLocalSet(setId, saved)),
+        (err) => {
+          replaceLocalSet(setId, before);
+          reopenSetForm(en.id, setId, draft, saveFailMessage(err));
+        }
+      );
+    }
+
+    // One place for save bookkeeping: the promise stays in setSaves until it
+    // settles (so settlePendingSets can wait for it) and every failure goes
+    // through the caller's rollback.
+    function trackSetSave(p, onFail) {
+      const done = p.catch((err) => { try { onFail(err); } catch (_) {} });
+      setSaves.add(done);
+      done.then(() => setSaves.delete(done));
+      return done;
+    }
+
+    // Swap a locally-applied row for the server's version (or back to a
+    // snapshot on rollback), carrying an open form / pending delete that
+    // still points at the temp id over to the real one.
+    function replaceLocalSet(id, saved) {
+      let found = false;
+      if (session) {
+        for (const en of session.entries) {
+          const i = en.sets.findIndex((s) => s.id === id);
+          if (i >= 0) { en.sets[i] = saved; found = true; break; }
+        }
+      }
+      if (!found) return;
+      if (pendingDelete && pendingDelete.kind === 'set' && pendingDelete.id === id) pendingDelete.id = saved.id;
+      if (openForm && openForm.setId === id) openForm.setId = saved.id;
+      rerenderInPlace();
+    }
+    function removeLocalSet(id) {
+      if (!session) return;
+      for (const en of session.entries) {
+        const i = en.sets.findIndex((s) => s.id === id);
+        if (i >= 0) { en.sets.splice(i, 1); return; }
+      }
+    }
+    // A background re-render must not swallow what is being typed into a set
+    // form that has since been opened (the draft is only read on submit).
+    function rerenderInPlace() {
+      if (view !== 'session') return;
+      const form = document.getElementById('set-form');
+      if (form && openForm) openForm.draft = readDraft(form);
+      render();
+    }
+    // Rollback message: a validation error from the server is already
+    // readable, anything else is almost always the connection.
+    function saveFailMessage(err) {
+      const m = (err && err.message) || '';
+      if (!m || /failed to fetch|networkerror|load failed|network request failed/i.test(m)) {
+        return 'That set was not saved. Check your connection and try again.';
+      }
+      return 'That set was not saved. ' + m;
+    }
+    // Put the values back in a form so nothing typed is lost, and say it out
+    // loud too in case the user has already scrolled on.
+    function reopenSetForm(entryId, setId, draft, msg) {
+      toast(msg);
+      if (view !== 'session' || !findEntryLocal(entryId)) return;
+      if (openForm && (openForm.entryId !== entryId || openForm.setId !== setId)) { render(); return; }
+      openForm = { entryId, setId, draft, error: msg };
+      render();
+    }
+    // Wait for in-flight saves, for actions that need a real server id (edit,
+    // delete, leaving the session).
+    async function settlePendingSets() {
+      let guard = 0;
+      while (setSaves.size && guard++ < 5) await Promise.all([...setSaves]);
+    }
+    function resolveSetId(id) {
+      return setSaveIds.has(id) ? setSaveIds.get(id) : id;
     }
 
     // ---------- data loading ----------
@@ -2017,6 +2170,7 @@
       }
       const r = restReadout();
       const wasOver = el.dataset.over === '1';
+      el.dataset.armed = stopwatchStart ? '1' : '0';
       el.textContent = r.text;
       const lbl = document.getElementById('rest-label');
       if (lbl) lbl.textContent = r.label;
@@ -2314,6 +2468,13 @@
       if (pd.handle) { try { pd.handle.dismiss(); } catch (_) {} }
       hideUndoToast();
       if (openForm && ((pd.kind === 'entry' && openForm.entryId === pd.id) || (pd.kind === 'set' && openForm.setId === pd.id))) openForm = null;
+      if (pd.kind === 'set') {
+        // A row swiped away while its save was still in flight: wait for the
+        // id, and drop the delete entirely if that save never landed.
+        await settlePendingSets();
+        pd.id = resolveSetId(pd.id);
+        if (pd.id < 0) return;
+      }
       let failed = false;
       try {
         for (const url of deleteUrlsFor(pd)) await api('DELETE', url);
@@ -2410,7 +2571,13 @@
     // deferred refresh can't wipe in-progress typing.
     const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
+    // Actions that address a set by id (or take the session view away) wait
+    // for any optimistic save to settle first, so they can never send a temp
+    // id to the server.
+    const SETTLE_BEFORE = new Set(['edit-set', 'delete-set', 'delete-entry', 'delete-session', 'back-home', 'open-session', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'export-json', 'import-json', 'run-import']);
+
     async function handle(action, el) {
+      if (SETTLE_BEFORE.has(action)) await settlePendingSets();
       if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
       switch (action) {
         case 'start-workout': {
@@ -2619,7 +2786,9 @@
           break;
         case 'edit-set': {
           const en = findEntryLocal(+el.dataset.entry);
-          const st = en.sets.find((x) => x.id === +el.dataset.set);
+          // The row may have been rendered with a temp id and saved since.
+          const st = en && en.sets.find((x) => x.id === resolveSetId(+el.dataset.set));
+          if (!st) break; // its save failed and the row is gone
           openForm = { entryId: en.id, setId: st.id, draft: draftFromSet(st), error: '' };
           pendingFocus = 'set-form';
           render();
@@ -2630,7 +2799,7 @@
           render();
           break;
         case 'delete-set':
-          await api('DELETE', '/api/sets/' + el.dataset.set);
+          await api('DELETE', '/api/sets/' + resolveSetId(+el.dataset.set));
           openForm = null;
           await refreshSession();
           break;
@@ -2773,6 +2942,7 @@
     (async () => {
       try {
         const st = await api('GET', '/api/settings');
+        isStaging = !!st.staging;
         weightUnit = st.weight_unit === 'lbs' ? 'lbs' : 'kg';
         bodyweightKg = st.bodyweight_kg !== null && st.bodyweight_kg !== undefined ? parseFloat(st.bodyweight_kg) || null : null;
       }
@@ -2780,7 +2950,17 @@
       // ?session=<id> deep-links straight into that session's view, and
       // &picker=1 also opens the add-exercise sheet — like ?import=1, this
       // lets the proposal checks reach screens that otherwise need clicks.
-      const deepSession = parseInt(params.get('session') || '', 10);
+      // ?session=latest picks the newest workout, so a deep link can reach a
+      // real session whose id it cannot know (the staging tester's own copy
+      // of the demo data gets fresh ids).
+      const sessionParam = params.get('session') || '';
+      let deepSession = parseInt(sessionParam, 10);
+      if (sessionParam === 'latest') {
+        try {
+          const list = (await api('GET', '/api/sessions')).sessions;
+          if (list.length) deepSession = list[0].id;
+        } catch (_) {}
+      }
       if (deepSession) {
         try {
           await openSession(deepSession);
@@ -2802,6 +2982,22 @@
           if (params.get('addset') === '1' && session && session.entries.length) {
             const en = session.entries.find((x) => x.sets.length) || session.entries[0];
             await handle('open-add-set', { dataset: { entry: String(en.id) } });
+          }
+          // &logset=1 runs the real log-set flow once: open the add-set form
+          // on the first exercise that has sets and submit it, prefilled from
+          // its last set. Lets the proposal checks cover the optimistic save
+          // end to end, which no navigate-only check could otherwise reach.
+          // Preview-only, because it writes a set: a hand-typed URL must
+          // never add one to somebody's real workout. The flow it drives is
+          // the same code in both environments.
+          if (params.get('logset') === '1' && isStaging && session && session.entries.length) {
+            const en = session.entries.find((x) => x.sets.length) || session.entries[0];
+            await handle('open-add-set', { dataset: { entry: String(en.id) } });
+            const form = document.getElementById('set-form');
+            if (form) {
+              form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+              await settlePendingSets();
+            }
           }
           // &rest=1 arms the rest timer and opens its expanded card — the
           // demo session's newest set is hours old, so seedStopwatch() leaves

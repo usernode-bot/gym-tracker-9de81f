@@ -58,7 +58,12 @@
     { "name": "Expanded rest timer offers Reset", "path": "/?demo=1&session=900002&rest=1", "expectSelector": "[data-action=\"rest-reset\"]" },
     { "name": "Expanded rest timer offers Cancel", "path": "/?demo=1&session=900002&rest=1", "expectSelector": "[data-action=\"rest-cancel\"]" },
     { "name": "Rest length dial renders", "path": "/?demo=1&session=900002&rest=1", "expectSelector": "[data-rest-dial]" },
-    { "name": "Rest timer defaults to a 2:00 target", "path": "/?demo=1&session=900002&rest=1", "expectText": "2:00" }
+    { "name": "Rest timer defaults to a 2:00 target", "path": "/?demo=1&session=900002&rest=1", "expectText": "2:00" },
+    { "name": "Set form offers the Log set button", "path": "/?demo=1&session=900002&addset=1", "expectText": "Log set" },
+    { "name": "Log set submit control renders", "path": "/?demo=1&session=900002&addset=1", "expectSelector": "#set-form button[type=\"submit\"]" },
+    { "name": "Logging a set arms the rest timer", "path": "/?session=latest&logset=1", "expectSelector": "#stopwatch[data-armed=\"1\"]" },
+    { "name": "Logged set row renders once the save settles", "path": "/?session=latest&logset=1", "expectSelector": "[data-swipe^=\"set:\"]" },
+    { "name": "Latest-session deep link opens a workout", "path": "/?session=latest", "expectText": "Add exercise" }
   ],
   "admins": [
     "evan"

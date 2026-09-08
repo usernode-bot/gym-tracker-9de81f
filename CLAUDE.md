@@ -128,6 +128,30 @@ view. All workout data is strictly private per user.
   input collapses the card so its backdrop can't eat taps invisibly.
   Notes (session, entry, set) wrap as paragraphs —
   `whitespace-pre-wrap break-words`, never `truncate`.
+- **Logging a set is optimistic** (issue #43): `onSetSubmit` never
+  awaits the network before painting. The new/edited row goes straight
+  into the local session payload with a negative temp id and
+  `pending: true` (rendered at `opacity-60`, `data-pending-set`), the
+  form closes, the rest timer arms, and the POST/PATCH settles in the
+  background (`setSaves`, `setSaveIds`). There is no re-fetch of the
+  session on the happy path — the server row replaces the temp one in
+  place via `replaceLocalSet`. On failure the row is rolled back (or
+  the pre-edit snapshot restored) and the form reopens with the draft
+  intact plus a plain-language message from `saveFailMessage`. Three
+  things keep temp ids safe: `settlePendingSets()` runs before any
+  action in `SETTLE_BEFORE` (edit, delete, leaving the screen),
+  `replaceLocalSet` migrates a temp id held by `pendingDelete` /
+  `openForm`, and `resolveSetId` is the fallback lookup. A second tap
+  is a no-op because `openForm` is cleared synchronously. Background
+  reconciles re-render through `rerenderInPlace`, which re-reads an
+  open form's draft first so a settling save cannot eat typing.
+- **Two automation hooks for the log-set checks**: `?session=latest`
+  opens the most recent session (a check cannot know row ids after
+  `ensureStagingUserData` copies the demo data under the tester), and
+  `&logset=1` submits `#set-form` once for real. `logset` is gated on
+  `isStaging`, which comes from the `staging` flag now returned by
+  `GET /api/settings` — it writes a set, so it must never run against
+  a production account. No feature is gated on that flag.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,
