@@ -94,9 +94,12 @@ view. All workout data is strictly private per user.
   counts (time and weight-0 sets included — unlike strength levels,
   no bodyweight needed). Shown **alongside** strength levels, never
   replacing them: the Progress hub body map has a Strength/Frequency
-  toggle (`&freq=1` with `&progress=1` pre-selects Frequency for the
-  dapp.json checks), and the muscle drill-in carries a status line +
-  a dashed 10 sets/wk guideline on its weekly-sets chart.
+  toggle (`&freq=1` / `&strength=1` with `&progress=1` pre-select a
+  mode for the dapp.json checks — the hub itself still opens on
+  Frequency for a user with no bodyweight, so `&strength=1` is the
+  only URL that reaches the "Set your bodyweight" prompt), and the
+  muscle drill-in carries a status line + a dashed 10 sets/wk
+  guideline on its weekly-sets chart.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't

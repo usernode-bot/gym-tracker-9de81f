@@ -3017,9 +3017,13 @@
       if (params.get('progress') === '1') {
         try {
           await openProgress();
-          // &freq=1 pre-selects the body map's Frequency mode — lets the
-          // proposal checks assert on the frequency legend.
+          // &freq=1 / &strength=1 pre-select the body map's mode — lets the
+          // proposal checks assert on the frequency legend, and on the
+          // strength legend / bodyweight prompt (which a user without a
+          // bodyweight set would otherwise only reach by tapping Strength,
+          // since the hub opens them on Frequency).
           if (params.get('freq') === '1' && progressHub) { progressHub.mode = 'freq'; renderBodyDiagram(); }
+          else if (params.get('strength') === '1' && progressHub) { progressHub.mode = 'strength'; renderBodyDiagram(); }
           return;
         } catch (_) {}
       }
