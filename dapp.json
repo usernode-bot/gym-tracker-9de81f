@@ -307,5 +307,9 @@
   "governance": {
     "approvers": "invited",
     "approvals": "default"
+  },
+  "visibility": {
+    "build": "public",
+    "view": "public"
   }
 }
