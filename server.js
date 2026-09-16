@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
@@ -9,6 +10,39 @@ const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const USERNODE_JWT_PUBLIC_KEY = process.env.USERNODE_JWT_PUBLIC_KEY;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
+
+// Where the platform itself lives. The platform injects USERNODE_PLATFORM_ORIGIN
+// into every app's environment, derived from the domain that deployment actually
+// runs on, and reading it is the whole point: a platform hostname written into
+// this repo is a hostname that goes stale the next time the platform moves —
+// which is exactly what happened here, and what left the asset tags and the
+// "Open in Usernode" link pointing at a host that no longer answers. The literal
+// below is only the standalone-deploy fallback.
+//
+// Validated rather than trusted: the value is interpolated into markup and into
+// a redirect, so anything that is not a plain http(s) origin is discarded.
+const PLATFORM_ORIGIN_FALLBACK = 'https://my.onhomeroom.com';
+const PLATFORM_ORIGIN = (() => {
+  const raw = String(process.env.USERNODE_PLATFORM_ORIGIN || '').trim().replace(/\/+$/, '');
+  try {
+    const u = new URL(raw);
+    if ((u.protocol === 'https:' || u.protocol === 'http:') && u.origin === raw) return raw;
+  } catch (_) { /* unset or unparseable — fall through */ }
+  if (raw) console.warn('USERNODE_PLATFORM_ORIGIN is not a plain origin; ignoring it:', raw);
+  return PLATFORM_ORIGIN_FALLBACK;
+})();
+
+// index.html carries the placeholder, so it is rendered once at boot rather
+// than per request. Read eagerly: an unreadable template should fail the
+// container immediately, not on the first visitor.
+function renderTemplate(file) {
+  return fs
+    .readFileSync(path.join(__dirname, 'public', file), 'utf8')
+    .split('__USERNODE_PLATFORM_ORIGIN__')
+    .join(PLATFORM_ORIGIN);
+}
+
+const INDEX_HTML = renderTemplate('index.html');
 
 // All staging demo rows (see seed below) belong to this fake user id.
 const DEMO_USER_ID = 900001;
@@ -981,7 +1015,18 @@ app.patch('/api/settings', wrap(async (req, res) => {
   });
 }));
 
-app.use(express.static(path.join(__dirname, 'public')));
+// The static handler must never serve a file that renderTemplate owns, or it
+// hands out the unrendered template — placeholder text where the platform
+// origin should be, which is a broken page with broken asset tags. Two ways it
+// would: as the directory index for / (hence index: false), and by name for an
+// explicit /index.html. So it skips those paths and they fall through to
+// the routes that render them.
+const TEMPLATED_DOCS = new Set(['/index.html']);
+const serveStatic = express.static(path.join(__dirname, 'public'), { index: false });
+
+app.use((req, res, next) => (
+  TEMPLATED_DOCS.has(req.path) ? next() : serveStatic(req, res, next)
+));
 
 // HTML shell: serve the app if authenticated. Unauthenticated top-level
 // visits (share links pasted into a browser — Sec-Fetch-Dest: document)
@@ -994,18 +1039,18 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
   if (!req.user) {
     if (req.get('sec-fetch-dest') === 'document') {
-      return res.redirect(302, 'https://social-vibecoding.usernodelabs.org/#app/gym-tracker-9de81f/full');
+      return res.redirect(302, `${PLATFORM_ORIGIN}/#app/gym-tracker-9de81f/full`);
     }
     return res.status(401).send(`<!doctype html><meta charset=utf-8><title>Open in Usernode</title>
 <body style="font-family:system-ui;background:#09090b;color:#e4e4e7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
   <div style="max-width:24rem;padding:2rem;text-align:center">
     <h1 style="font-size:1.25rem;margin:0 0 0.5rem">Open this app inside Usernode</h1>
     <p style="color:#a1a1aa;font-size:0.9rem;margin:0 0 1.25rem">This page is served via the platform; direct visits aren't authenticated.</p>
-    <a href="https://social-vibecoding.usernodelabs.org/#app/gym-tracker-9de81f/full" style="display:inline-block;padding:0.5rem 1rem;background:#7c3aed;color:white;border-radius:0.5rem;text-decoration:none;font-size:0.9rem">Open in Usernode</a>
+    <a href="${PLATFORM_ORIGIN}/#app/gym-tracker-9de81f/full" style="display:inline-block;padding:0.5rem 1rem;background:#7c3aed;color:white;border-radius:0.5rem;text-decoration:none;font-size:0.9rem">Open in Usernode</a>
   </div>
 </body>`);
   }
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.type('html').send(INDEX_HTML);
 });
 
 async function migrate() {
