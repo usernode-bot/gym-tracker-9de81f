@@ -68,7 +68,30 @@
   </script>
   <title>Gym Tracker</title>
   <script src="__USERNODE_PLATFORM_ORIGIN__/usernode-tailwind/v1/tailwind.js"></script>
-  <script>tailwind.config = { darkMode: 'class', future: { hoverOnlyWhenSupported: true } }</script>
+  <script>
+  // The app's single accent color routes through CSS custom properties so a
+  // free-form user color can drive it: Tailwind cannot extract a class name
+  // assembled at runtime, but it can read a variable. Channels (not hex) keep
+  // the opacity modifiers (bg-accent/10) working.
+  tailwind.config = {
+    darkMode: 'class',
+    future: { hoverOnlyWhenSupported: true },
+    theme: {
+      extend: {
+        colors: {
+          accent: {
+            DEFAULT: 'rgb(var(--accent-rgb) / <alpha-value>)',
+            hover: 'rgb(var(--accent-hover-rgb) / <alpha-value>)',
+            text: 'rgb(var(--accent-text-rgb) / <alpha-value>)',
+            on: 'rgb(var(--accent-on-rgb) / <alpha-value>)',
+            soft: 'rgb(var(--accent-soft-rgb) / <alpha-value>)',
+            invert: 'rgb(var(--accent-invert-rgb) / <alpha-value>)',
+          },
+        },
+      },
+    },
+  };
+  </script>
 
   <!-- usernode-native UI kit — centrally hosted, never vendored. Loading it
        sets html.un-ios / .un-android / .un-desktop and exposes
@@ -170,12 +193,76 @@
     }
     #rest-dial:focus-visible { outline: 2px solid var(--un-accent, #7c3aed); outline-offset: 4px; }
 
-    /* ── usernode-native kit integration ─────────────────────────────── */
-    /* Theme the kit to the app's violet; radius matches rounded-xl. */
+    /* ── accent color (per-user, via CSS custom properties) ──────────── */
+    /* Tailwind cannot extract a runtime-assembled class name, so the accent
+       is a set of variables instead of a color family. Two families are kept
+       (light / dark) and the semantic tokens pick between them below, so the
+       theme class alone flips every derived shade with no JS re-run. The
+       defaults reproduce today's violet exactly, so the app is correct before
+       applyAccent() ever runs. Values are RGB channels so opacity modifiers
+       (bg-accent/10) keep working. --accent-rgb is the solid UI color,
+       --accent-text-rgb is the readable accent for text on the page surface,
+       --accent-soft-rgb is the tinted-pill label, --accent-on-rgb is what is
+       drawn on top of a solid accent fill, and the ramps are the four
+       "deeper = stronger" strength steps. */
     :root {
-      --un-accent: #7c3aed;
+      --accent-l-base: 124 58 237;   /* violet-600 */
+      --accent-l-hover: 139 92 246;  /* violet-500 */
+      --accent-l-text: 124 58 237;   /* violet-600 */
+      --accent-l-soft: 109 40 217;   /* violet-700 */
+      --accent-l-on: 255 255 255;
+      --accent-l-ramp-1: rgb(221 214 254); /* violet-200 */
+      --accent-l-ramp-2: rgb(167 139 250); /* violet-400 */
+      --accent-l-ramp-3: rgb(124 58 237);  /* violet-600 */
+      --accent-l-ramp-4: rgb(91 33 182);   /* violet-800 */
+
+      --accent-d-base: 124 58 237;
+      --accent-d-hover: 139 92 246;
+      --accent-d-text: 167 139 250;  /* violet-400 */
+      --accent-d-soft: 196 181 253;  /* violet-300 */
+      --accent-d-on: 255 255 255;
+      --accent-d-ramp-1: rgb(76 29 149);   /* violet-900 */
+      --accent-d-ramp-2: rgb(109 40 217);  /* violet-700 */
+      --accent-d-ramp-3: rgb(139 92 246);  /* violet-500 */
+      --accent-d-ramp-4: rgb(196 181 253); /* violet-300 */
+
+      --accent-rgb: var(--accent-l-base);
+      --accent-hover-rgb: var(--accent-l-hover);
+      --accent-text-rgb: var(--accent-l-text);
+      --accent-soft-rgb: var(--accent-l-soft);
+      --accent-on-rgb: var(--accent-l-on);
+      --accent-ramp-1: var(--accent-l-ramp-1);
+      --accent-ramp-2: var(--accent-l-ramp-2);
+      --accent-ramp-3: var(--accent-l-ramp-3);
+      --accent-ramp-4: var(--accent-l-ramp-4);
+      /* Readable accent text on an INVERTED surface (the undo pill is dark in
+         light mode, light in dark mode), so it swaps families. */
+      --accent-invert-rgb: var(--accent-d-text);
+    }
+    .dark {
+      --accent-rgb: var(--accent-d-base);
+      --accent-hover-rgb: var(--accent-d-hover);
+      --accent-text-rgb: var(--accent-d-text);
+      --accent-soft-rgb: var(--accent-d-soft);
+      --accent-on-rgb: var(--accent-d-on);
+      --accent-ramp-1: var(--accent-d-ramp-1);
+      --accent-ramp-2: var(--accent-d-ramp-2);
+      --accent-ramp-3: var(--accent-d-ramp-3);
+      --accent-ramp-4: var(--accent-d-ramp-4);
+      --accent-invert-rgb: var(--accent-l-text);
+    }
+
+    /* ── usernode-native kit integration ─────────────────────────────── */
+    /* Theme the kit to the app's accent; radius matches rounded-xl. */
+    :root {
+      --un-accent: rgb(var(--accent-rgb));
+      --un-accent-contrast: rgb(var(--accent-on-rgb));
       --un-radius-card: 0.75rem;
     }
+    /* The no-kit drop-set checkbox fallback (accent-accent is a Tailwind
+       utility over the same token, but this keeps the native control's own
+       accent in step without a generated class name). */
+    input[type="checkbox"].accent-accent { accent-color: rgb(var(--accent-rgb)); }
     /* .un-sheet sets user-select:none for the drag gesture — keep text
        entry/selection working in fields inside sheet content. */
     .un-sheet input, .un-sheet textarea {
@@ -188,8 +275,10 @@
     }
   </style>
 
-  <!-- Theme bootstrap: apply the stored preference (light/dark/system,
-       default system) before first paint to avoid a wrong-theme flash. -->
+  <!-- Theme + accent bootstrap: apply the stored light/dark preference
+       (default system) and the cached accent color before first paint, so
+       neither flashes. The accent is server-owned; the localStorage copy is
+       only a cache to bridge the gap before GET /api/settings resolves. -->
   <script>
   (function () {
     var pref = 'system';
@@ -201,6 +290,118 @@
       (pref === 'system' && window.matchMedia &&
        window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.classList.toggle('dark', dark);
+
+    // Derive the accent token families from a chosen hex. Self-contained: it
+    // must run before app JS, and applyAccent() calls the same function so the
+    // cached first paint and every later change are computed identically.
+    // Readability is solved by contrast, not by guessing: the on-color is
+    // whichever of black/white wins, and the text tokens are shaded until they
+    // clear a 4.5:1 contrast floor against the surface they sit on.
+    window.__unAccentDerive = function (hex) {
+      if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return null;
+      var r = parseInt(hex.slice(1, 3), 16),
+          g = parseInt(hex.slice(3, 5), 16),
+          b = parseInt(hex.slice(5, 7), 16);
+
+      function chan(c) { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+      function lumOf(t) { return 0.2126 * chan(t[0]) + 0.7152 * chan(t[1]) + 0.0722 * chan(t[2]); }
+      function ratio(a, b) { var l1 = lumOf(a), l2 = lumOf(b); var hi = Math.max(l1, l2), lo = Math.min(l1, l2); return (hi + 0.05) / (lo + 0.05); }
+
+      // HSL so an arbitrary pick still yields a single-hue ramp. Round-trip
+      // through HSL only for derived steps; the base stays exactly as chosen.
+      var mx = Math.max(r, g, b) / 255, mn = Math.min(r, g, b) / 255;
+      var l0 = (mx + mn) / 2, d = mx - mn, hh = 0, ss = 0;
+      if (d > 0) {
+        ss = l0 > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+        if (mx === r / 255) hh = ((g - b) / 255) / d + (g < b ? 6 : 0);
+        else if (mx === g / 255) hh = ((b - r) / 255) / d + 2;
+        else hh = ((r - g) / 255) / d + 4;
+        hh /= 6;
+      }
+      function hsl(h, sat, l) {
+        h = ((h % 1) + 1) % 1; sat = Math.max(0, Math.min(1, sat)); l = Math.max(0, Math.min(1, l));
+        var c = (1 - Math.abs(2 * l - 1)) * sat, x = c * (1 - Math.abs((h * 6) % 2 - 1)), m = l - c / 2, rr, gg, bb;
+        if (h < 1 / 6) { rr = c; gg = x; bb = 0; }
+        else if (h < 2 / 6) { rr = x; gg = c; bb = 0; }
+        else if (h < 3 / 6) { rr = 0; gg = c; bb = x; }
+        else if (h < 4 / 6) { rr = 0; gg = x; bb = c; }
+        else if (h < 5 / 6) { rr = x; gg = 0; bb = c; }
+        else { rr = c; gg = 0; bb = x; }
+        return [Math.round((rr + m) * 255), Math.round((gg + m) * 255), Math.round((bb + m) * 255)];
+      }
+      function tri(a) { return a[0] + ' ' + a[1] + ' ' + a[2]; }
+
+      var BLACK = [17, 24, 39], WHITE = [255, 255, 255];
+      // The solid fill keeps the chosen color's own lightness in both themes so
+      // a button looks the same in light and dark. Saturation is held near the
+      // original so a gray stays gray.
+      var sat = Math.max(0.16, Math.min(ss, 0.9));
+      // On-color: whichever pole actually contrasts better (amber/orange want
+      // black; violet/blue want white).
+      var onLight = ratio(WHITE, [r, g, b]) >= ratio(BLACK, [r, g, b]) ? WHITE : BLACK;
+      var onDark = onLight;
+      // Shade a text colour until it clears the floor against `surface`,
+      // stepping away from it. Returns the best attempt if it cannot clear.
+      function shader(h, s0, lStart, dir, surface, floor) {
+        var l = lStart, best = hsl(h, s0, lStart), bestR = ratio(best, surface);
+        for (var i = 0; i < 60; i++) {
+          var cand = hsl(h, s0, l);
+          var cr = ratio(cand, surface);
+          if (cr > bestR) { bestR = cr; best = cand; }
+          if (cr >= floor) return cand;
+          l += dir * 0.02;
+          if (l < 0 || l > 1) break;
+        }
+        return best;
+      }
+      var WHITE_SURF = WHITE, DARK_SURF = [9, 9, 11]; // page surfaces: white / zinc-950
+      // Text token: readable on the page surface for links and small labels.
+      var textL = shader(hh, sat, l0, -1, WHITE_SURF, 4.5);
+      var textD = shader(hh, sat, l0, 1, DARK_SURF, 4.5);
+      // Soft label (tinted pill text) borrows the text shade; it sits on a very
+      // light 10% tint of the same hue, so the page-surface floor still applies.
+      // The soft shade is a step further from the surface than the text shade
+      // (7:1, not 4.5:1), so it reads as a distinct darker/lighter state on
+      // hover and still reads on a 10% tint of the same hue.
+      var softL = shader(hh, sat, l0, -1, WHITE_SURF, 7);
+      var softD = shader(hh, sat, Math.max(l0, 0.7), 1, DARK_SURF, 7);
+
+      // Four "deeper = stronger" strength steps. Light mode walks light -> dark;
+      // dark mode inverts, so deeper still reads as stronger on a dark surface.
+      var rampL = [hsl(hh, Math.min(sat, 0.85), 0.90), hsl(hh, sat, 0.66), hsl(hh, sat, Math.min(0.46, Math.max(l0, 0.40))), hsl(hh, sat, 0.30)];
+      var rampD = [hsl(hh, sat, 0.28), hsl(hh, sat, 0.42), hsl(hh, sat, Math.min(0.60, Math.max(l0, 0.50))), hsl(hh, Math.min(sat, 0.85), 0.80)];
+
+      return {
+        '--accent-l-base': tri([r, g, b]),
+        '--accent-l-hover': tri(hsl(hh, sat, Math.min(0.72, l0 + 0.10))),
+        '--accent-l-text': tri(textL),
+        '--accent-l-soft': tri(softL),
+        '--accent-l-on': tri(onLight),
+        '--accent-l-ramp-1': 'rgb(' + tri(rampL[0]) + ')',
+        '--accent-l-ramp-2': 'rgb(' + tri(rampL[1]) + ')',
+        '--accent-l-ramp-3': 'rgb(' + tri(rampL[2]) + ')',
+        '--accent-l-ramp-4': 'rgb(' + tri(rampL[3]) + ')',
+        '--accent-d-base': tri([r, g, b]),
+        '--accent-d-hover': tri(hsl(hh, sat, Math.min(0.74, l0 + 0.10))),
+        '--accent-d-text': tri(textD),
+        '--accent-d-soft': tri(softD),
+        '--accent-d-on': tri(onDark),
+        '--accent-d-ramp-1': 'rgb(' + tri(rampD[0]) + ')',
+        '--accent-d-ramp-2': 'rgb(' + tri(rampD[1]) + ')',
+        '--accent-d-ramp-3': 'rgb(' + tri(rampD[2]) + ')',
+        '--accent-d-ramp-4': 'rgb(' + tri(rampD[3]) + ')',
+      };
+    };
+    window.__unAccentApply = function (hex) {
+      var tokens = window.__unAccentDerive(hex);
+      if (!tokens) return;
+      var root = document.documentElement.style;
+      for (var k in tokens) root.setProperty(k, tokens[k]);
+    };
+    try {
+      var accent = localStorage.getItem('gym-tracker-accent');
+      if (accent) window.__unAccentApply(accent);
+    } catch (_) {}
   })();
   </script>
 
@@ -214,7 +415,7 @@
        action toast (unNative.toast in startPendingDelete). -->
   <div id="undo-toast" class="hidden fixed kb-bottom-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-zinc-800 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 text-sm pl-4 pr-1.5 py-1.5 rounded-full shadow-lg max-w-[90%]">
     <span id="undo-toast-msg"></span>
-    <button data-action="undo-delete" class="font-semibold text-violet-300 dark:text-violet-700 px-2.5 py-1 rounded-full">Undo</button>
+    <button data-action="undo-delete" class="font-semibold text-accent-invert px-2.5 py-1 rounded-full">Undo</button>
   </div>
   <!-- Rest timer dock: body-level and permanent so it stays put across
        re-renders and view transitions; render() only toggles `hidden`.
@@ -228,7 +429,7 @@
       <button data-action="toggle-rest-panel" title="Tap for timer options" class="flex items-center gap-2 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 px-5 py-2 shadow-lg overflow-hidden relative">
         <span id="rest-label" class="text-[10px] uppercase tracking-widest text-zinc-500">Rest</span>
         <span id="stopwatch" class="font-mono text-lg tabular-nums">—:—</span>
-        <span class="absolute left-0 bottom-0 h-[2px] bg-violet-500 transition-none" data-rest-progress style="width: 0%"></span>
+        <span class="absolute left-0 bottom-0 h-[2px] bg-accent transition-none" data-rest-progress style="width: 0%"></span>
       </button>
     </div>
     <div id="rest-card" class="hidden rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-2xl p-4"></div>
@@ -250,6 +451,8 @@
     let pendingFocus = null;  // one-shot: which just-opened surface wireInputs should autofocus on the next render ('set-form' | 'entry-note' | 'session-note' | 'picker' | 'bw')
     let editingNote = null;   // entry id whose note input is open
     let editingSessionNote = false; // the workout-level note input is open
+    let appearanceSheet = null; // truthy while the Appearance (accent color) sheet is open
+    let accentColor = null;   // per-user accent hex, or null for the default violet
     let importSheet = null;   // { text, error, busy } while the import sheet is open
     let exportSheet = null;   // { text, filename, count, copied } while the export sheet is open
     let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
@@ -308,6 +511,53 @@
       const onSystemChange = () => { if (getThemePref() === 'system') applyTheme(); };
       if (themeMq.addEventListener) themeMq.addEventListener('change', onSystemChange);
       else if (themeMq.addListener) themeMq.addListener(onSystemChange);
+    }
+
+    // ---------- accent color ----------
+    // The accent is a per-user color stored in user_settings.accent_color. The
+    // server value is the truth (it follows the account across devices); the
+    // localStorage copy under gym-tracker-accent exists only to paint the
+    // right color before GET /api/settings resolves, mirroring gym-tracker-theme.
+    // Every derived shade is written as a CSS variable, so no Tailwind class
+    // name is ever assembled at runtime.
+    const ACCENT_KEY = 'gym-tracker-accent';
+    const ACCENT_DEFAULT = '#7c3aed';
+    // The "extra default colors" offered alongside the picker. The first is the
+    // default violet (NULL in the DB also means this).
+    const ACCENT_PRESETS = [
+      { hex: '#7c3aed', label: 'Violet' },
+      { hex: '#2563eb', label: 'Blue' },
+      { hex: '#0d9488', label: 'Teal' },
+      { hex: '#059669', label: 'Green' },
+      { hex: '#d97706', label: 'Amber' },
+      { hex: '#ea580c', label: 'Orange' },
+      { hex: '#e11d48', label: 'Rose' },
+      { hex: '#475569', label: 'Graphite' },
+    ];
+    function isValidAccent(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v); }
+    function normalizeAccent(v) { return isValidAccent(v) ? v.toLowerCase() : null; }
+    function getAccentCache() {
+      try { return normalizeAccent(localStorage.getItem(ACCENT_KEY)); } catch (_) { return null; }
+    }
+    function setAccentCache(hex) {
+      try {
+        if (hex) localStorage.setItem(ACCENT_KEY, hex);
+        else localStorage.removeItem(ACCENT_KEY);
+      } catch (_) {}
+    }
+    // '' / null means "default", which clears the inline overrides so the CSS
+    // :root / .dark violet fallbacks apply again.
+    function applyAccent(hex) {
+      const root = document.documentElement;
+      const keys = ['--accent-l-base','--accent-l-hover','--accent-l-text','--accent-l-soft','--accent-l-on',
+        '--accent-l-ramp-1','--accent-l-ramp-2','--accent-l-ramp-3','--accent-l-ramp-4',
+        '--accent-d-base','--accent-d-hover','--accent-d-text','--accent-d-soft','--accent-d-on',
+        '--accent-d-ramp-1','--accent-d-ramp-2','--accent-d-ramp-3','--accent-d-ramp-4'];
+      if (!normalizeAccent(hex)) {
+        for (const k of keys) root.style.removeProperty(k);
+        return;
+      }
+      if (typeof window.__unAccentApply === 'function') window.__unAccentApply(hex);
     }
 
     // ---------- rest target duration (client-side only, per device) ----------
@@ -412,7 +662,7 @@
     }
 
     // ---------- rendering ----------
-    const inp = 'bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-violet-500';
+    const inp = 'bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-accent';
 
     // ---------- progress / muscle constants ----------
     const MUSCLE_LABELS = { chest: 'Chest', back: 'Back', shoulders: 'Shoulders', biceps: 'Biceps', triceps: 'Triceps', quads: 'Quads', hamstrings: 'Hamstrings', glutes: 'Glutes', calves: 'Calves', core: 'Core', forearms: 'Forearms' };
@@ -433,16 +683,16 @@
     // Sequential single-hue ramp, one entry per level (light / dark). Dark
     // mode inverts lightness so "deeper = stronger" reads on both themes.
     const LEVEL_FILLS = [
-      'fill-violet-200 dark:fill-violet-900',
-      'fill-violet-400 dark:fill-violet-700',
-      'fill-violet-600 dark:fill-violet-500',
-      'fill-violet-800 dark:fill-violet-300',
+      'fill-[var(--accent-ramp-1)]',
+      'fill-[var(--accent-ramp-2)]',
+      'fill-[var(--accent-ramp-3)]',
+      'fill-[var(--accent-ramp-4)]',
     ];
     const LEVEL_DOTS = [
-      'bg-violet-200 dark:bg-violet-900',
-      'bg-violet-400 dark:bg-violet-700',
-      'bg-violet-600 dark:bg-violet-500',
-      'bg-violet-800 dark:bg-violet-300',
+      'bg-[var(--accent-ramp-1)]',
+      'bg-[var(--accent-ramp-2)]',
+      'bg-[var(--accent-ramp-3)]',
+      'bg-[var(--accent-ramp-4)]',
     ];
 
     // Training-frequency ("growth") states: avg sets/week per muscle over a
@@ -494,14 +744,31 @@
 
     function themeSwitcherHtml() {
       const pref = getThemePref();
-      const opt = (t, label, icon) => `<button type="button" data-action="set-theme" data-theme="${t}" title="${label}" aria-label="${label}" aria-pressed="${pref === t}" class="px-2 py-1 text-sm leading-none transition-colors ${pref === t ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${icon}</button>`;
+      const opt = (t, label, icon) => `<button type="button" data-action="set-theme" data-theme="${t}" title="${label}" aria-label="${label}" aria-pressed="${pref === t}" class="px-2 py-1 text-sm leading-none transition-colors ${pref === t ? 'bg-accent text-accent-on' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${icon}</button>`;
       return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">
         ${opt('light', 'Light', '☀')}${opt('dark', 'Dark', '☾')}${opt('system', 'System', '◐')}
       </div>`;
     }
 
+    // A small palette affordance in the top bar, built like the unit / theme
+    // switchers beside it. Opens the Appearance sheet.
+    function appearanceSwitcherHtml() {
+      // A filled swatch showing the current color: the affordance IS the
+      // current state, and it needs no glyph (the app ships no icon set).
+      return `<button type="button" data-action="open-appearance" title="Appearance" aria-label="Appearance" class="flex items-center px-2 py-1 leading-none rounded-lg border border-zinc-200 dark:border-zinc-700 transition-colors">
+        <span data-accent-swatch class="inline-block w-3.5 h-3.5 rounded-full border border-black/10 dark:border-white/20" style="background:rgb(var(--accent-rgb))" aria-hidden="true"></span>
+      </button>`;
+    }
+
+    // Repaint the top-bar swatch in place, without a render (used while the
+    // native picker is open).
+    function paintAccentSwatch() {
+      const dot = document.querySelector('[data-accent-swatch]');
+      if (dot) dot.style.background = 'rgb(var(--accent-rgb))';
+    }
+
     function unitSwitcherHtml() {
-      const opt = (u) => `<button type="button" data-action="set-unit" data-unit="${u}" title="Show weights in ${u}" aria-pressed="${weightUnit === u}" class="px-2 py-1 text-xs leading-none transition-colors ${weightUnit === u ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${u}</button>`;
+      const opt = (u) => `<button type="button" data-action="set-unit" data-unit="${u}" title="Show weights in ${u}" aria-pressed="${weightUnit === u}" class="px-2 py-1 text-xs leading-none transition-colors ${weightUnit === u ? 'bg-accent text-accent-on' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${u}</button>`;
       return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">${opt('kg')}${opt('lbs')}</div>`;
     }
 
@@ -563,15 +830,15 @@
         ? `<div class="un-group">${rows}</div>`
         : `<div class="space-y-2">${rows}</div>`;
       return `
-        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() + themeSwitcherHtml() })}
-        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
+        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() + themeSwitcherHtml() + appearanceSwitcherHtml() })}
+        <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-accent hover:bg-accent-hover ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-accent-on shadow-lg shadow-accent/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
         ${list}
         <div class="flex justify-center gap-6 mt-6">
           <button data-action="export-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
           <button data-action="import-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
         </div>
-        ${!hasKit() && importSheet ? importSheetHtml() : ''}${!hasKit() && exportSheet ? exportSheetHtml() : ''}`;
+        ${!hasKit() && importSheet ? importSheetHtml() : ''}${!hasKit() && exportSheet ? exportSheetHtml() : ''}${!hasKit() && appearanceSheet ? appearanceSheetHtml() : ''}`;
     }
 
     function setFormHtml() {
@@ -596,17 +863,17 @@
       const others = en ? en.sets.filter((s) => !isPendingDelete('set', s.id)) : [];
       const pos = openForm.setId ? others.findIndex((s) => s.id === openForm.setId) : others.length;
       const showDrop = pos > 0 || d.drop;
-      const sideBtn = (v, label) => `<button type="button" data-action="form-side" data-side="${v}" class="flex-1 py-1 rounded-lg text-xs transition-colors ${(d.side || '') === v ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
+      const sideBtn = (v, label) => `<button type="button" data-action="form-side" data-side="${v}" class="flex-1 py-1 rounded-lg text-xs transition-colors ${(d.side || '') === v ? 'bg-accent text-accent-on' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
       return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-100 dark:bg-zinc-800/70 border border-zinc-200 dark:border-zinc-700 p-2.5">
         ${fields}
         <div class="flex items-center gap-2 mt-2">
           <div class="flex gap-1 flex-1">${sideBtn('', 'Both')}${sideBtn('left', 'L')}${sideBtn('right', 'R')}</div>
-          ${showDrop ? `<label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap">↘ Drop set <input type="checkbox" name="drop" ${d.drop ? 'checked' : ''} class="${hasKit() ? 'un-switch' : 'accent-violet-600'}"></label>` : ''}
+          ${showDrop ? `<label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap">↘ Drop set <input type="checkbox" name="drop" ${d.drop ? 'checked' : ''} class="${hasKit() ? 'un-switch' : 'accent-accent'}"></label>` : ''}
         </div>
         <input name="note" value="${esc(d.note)}" placeholder="note (optional)" maxlength="500" autocomplete="off" class="${inp} w-full mt-2">
         ${openForm.error ? `<div class="text-red-600 dark:text-red-400 text-xs mt-1.5">${esc(openForm.error)}</div>` : ''}
         <div class="flex items-center gap-2 mt-2">
-          <button type="submit" class="flex-1 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">${openForm.setId ? 'Save' : 'Log set'}</button>
+          <button type="submit" class="flex-1 py-2 rounded-lg bg-accent hover:bg-accent-hover text-accent-on text-sm font-medium">${openForm.setId ? 'Save' : 'Log set'}</button>
           <button type="button" data-action="cancel-set-form" class="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-700/60 text-sm">Cancel</button>
           ${openForm.setId ? `<button type="button" data-action="delete-set" data-set="${openForm.setId}" class="px-3 py-2 rounded-lg text-red-600 dark:text-red-400 text-sm" title="Delete set">Delete</button>` : ''}
         </div>
@@ -631,7 +898,7 @@
         // A set still saving renders in full, just faintly, so the press
         // reads as done without pretending the write has landed.
         return `<button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" ${s.pending ? 'data-pending-set="1"' : ''} class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left${s.pending ? ' opacity-60' : ''}">
-            <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
+            <span class="text-xs ${s.is_drop ? 'text-accent-text' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
             <span class="flex-1 min-w-0">
               <span class="font-mono">${esc(fmtSet(s))}</span>
               ${s.note ? `<span data-note="set" class="block text-xs italic text-zinc-500 leading-snug whitespace-pre-wrap break-words mt-0.5">${esc(s.note)}</span>` : ''}
@@ -640,10 +907,10 @@
       }).join('');
       const addArea = openForm && openForm.entryId === en.id && !openForm.setId
         ? setFormHtml()
-        : `<button data-action="open-add-set" data-entry="${en.id}" class="un-touch-target mt-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-2.5 py-1">+ Add set</button>`;
+        : `<button data-action="open-add-set" data-entry="${en.id}" class="un-touch-target mt-1 text-sm text-accent-text hover:text-accent-soft px-2.5 py-1">+ Add set</button>`;
       return `<div data-swipe="entry:${en.id}" class="relative rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
           <div class="flex items-center justify-between gap-2">
-            <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 break-words hover:text-violet-700 dark:hover:text-violet-300">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
+            <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 break-words hover:text-accent-soft">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
             <button data-action="delete-entry" data-entry="${en.id}" class="x-delete un-touch-target shrink-0 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
           </div>
           ${noteHtml}
@@ -677,7 +944,7 @@
           <input type="file" id="import-file" accept=".json,application/json" class="text-xs text-zinc-500 dark:text-zinc-400">
           <textarea id="import-text" rows="8" spellcheck="false" placeholder='{ "sessions": [ { "started_at": "2024-05-03T18:30:00Z", "exercises": [ … ] } ] }' class="${inp} w-full font-mono text-xs" style="min-height:8rem"></textarea>
           ${importSheet.error ? `<div class="text-red-600 dark:text-red-400 text-xs">${esc(importSheet.error)}</div>` : ''}
-          <button data-action="run-import" ${importSheet.busy ? 'disabled' : ''} class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-sm font-medium">${importSheet.busy ? 'Importing…' : 'Import'}</button>
+          <button data-action="run-import" ${importSheet.busy ? 'disabled' : ''} class="w-full py-2.5 rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-60 text-accent-on text-sm font-medium">${importSheet.busy ? 'Importing…' : 'Import'}</button>
         </div>`;
     }
     function importSheetHtml() {
@@ -692,13 +959,44 @@
           </div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400">${exportSheet.count} workout${exportSheet.count === 1 ? '' : 's'} · ${esc(exportSheet.filename)}</p>
           <textarea readonly rows="6" spellcheck="false" class="${inp} w-full font-mono text-xs" style="min-height:6rem">${esc(exportSheet.text)}</textarea>
-          <button data-action="download-export" class="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Download .json</button>
+          <button data-action="download-export" class="w-full py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-accent-on text-sm font-medium">Download .json</button>
           <button data-action="copy-export" class="w-full py-2.5 rounded-lg border ${exportSheet.copied ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-zinc-300 dark:border-zinc-600 text-zinc-700 dark:text-zinc-200 hover:border-zinc-400 dark:hover:border-zinc-500'} text-sm font-medium">${exportSheet.copied ? 'Copied ✓' : 'Copy JSON'}</button>
           <p class="text-xs text-zinc-500 dark:text-zinc-400">If the download doesn’t start (some in-app browsers block it), use Copy JSON and paste into a file or note.</p>
         </div>`;
     }
     function exportSheetHtml() {
       return legacySheetWrap('close-export', exportSheetBodyHtml(), { maxH: '85vh', cls: 'flex flex-col' });
+    }
+
+    // The Appearance sheet: pick a preset swatch, open the device's own color
+    // picker for anything else, or reset to the default violet. Live preview,
+    // no save button. Mirrors the Import/Export sheets' body/wrapper split.
+    function appearanceSheetBodyHtml() {
+      const current = accentColor || ACCENT_DEFAULT;
+      const swatches = ACCENT_PRESETS.map((p) => {
+        const active = current.toLowerCase() === p.hex;
+        return `<button type="button" data-action="set-accent" data-accent-preset="${p.hex}" title="${p.label}" aria-label="${p.label}" aria-pressed="${active}" class="w-9 h-9 rounded-full border ${active ? 'border-zinc-900 dark:border-zinc-100 ring-2 ring-offset-2 ring-zinc-400 dark:ring-offset-zinc-900' : 'border-zinc-200 dark:border-zinc-700'}" style="background:${p.hex}"></button>`;
+      }).join('');
+      return `<div class="flex flex-col gap-3 min-h-0">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Appearance</div>
+            <button data-action="close-appearance" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Color</div>
+            <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">Presets</div>
+            <div class="flex flex-wrap gap-2.5">${swatches}</div>
+          </div>
+          <label class="flex items-center justify-between gap-3 py-1">
+            <span class="text-sm">Custom color</span>
+            <input type="color" id="accent-custom" value="${esc(current)}" aria-label="Custom color" class="w-10 h-9 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 p-0.5">
+          </label>
+          <button type="button" data-action="reset-accent" class="w-full py-2.5 rounded-lg border border-zinc-300 dark:border-zinc-600 text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:border-zinc-400 dark:hover:border-zinc-500">Default</button>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">The color applies across the whole app the moment you choose it. Your light or dark setting is separate and stays as it is.</p>
+        </div>`;
+    }
+    function appearanceSheetHtml() {
+      return legacySheetWrap('close-appearance', appearanceSheetBodyHtml(), { cls: 'flex flex-col' });
     }
 
     function pickerBodyHtml() {
@@ -729,7 +1027,7 @@
         ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
         ${sNote}
         <div class="space-y-3">${cards}</div>
-        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
+        <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-accent-text hover:border-accent hover:text-accent-soft mt-4 mb-4">+ Add exercise</button>
         ${!hasKit() && picker ? pickerHtml() : ''}`;
     }
 
@@ -798,14 +1096,14 @@
       if (q && !exact) {
         // Creating is a two-step choice: the type is picked once, here, and
         // can never be changed afterward — so there's no pre-selected default.
-        const typeBtn = (t, label) => `<button data-action="create-exercise-typed" data-type="${t}" class="flex-1 py-2 rounded-lg text-sm bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 hover:bg-violet-600 hover:text-white dark:hover:bg-violet-600">${label}</button>`;
+        const typeBtn = (t, label) => `<button data-action="create-exercise-typed" data-type="${t}" class="flex-1 py-2 rounded-lg text-sm bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 hover:bg-accent-hover hover:text-accent-on dark:hover:bg-accent-hover">${label}</button>`;
         html += picker.creating === q
           ? `<div class="px-3 py-2.5 rounded-lg bg-zinc-100 dark:bg-zinc-800/40">
                <div class="text-sm mb-0.5">Create “${esc(q)}” as:</div>
                <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-2">This choice is permanent for the exercise.</div>
                <div class="flex gap-1.5">${typeBtn('reps', 'Reps × Weight')}${typeBtn('time', 'Time × Effort')}</div>
              </div>`
-          : `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-violet-600 dark:text-violet-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
+          : `<button data-action="create-exercise" class="w-full text-left px-3 py-2.5 rounded-lg text-accent-text hover:bg-zinc-100 dark:hover:bg-zinc-800">＋ Create “${esc(q)}”</button>`;
       }
       if (!html) html = '<div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">Type a name to create your first exercise</div>';
       box.innerHTML = html;
@@ -840,7 +1138,7 @@
       const t = hubTint(slug);
       const cls = t
         ? `cursor-pointer ${t.fill} hover:opacity-70 transition-opacity`
-        : 'cursor-pointer fill-zinc-400 dark:fill-zinc-600 hover:fill-violet-500 dark:hover:fill-violet-500 transition-colors';
+        : 'cursor-pointer fill-zinc-400 dark:fill-zinc-600 hover:fill-accent transition-colors';
       const title = MUSCLE_LABELS[slug] + (t ? ' — ' + t.label : '');
       return `<g data-action="open-muscle-chart" data-muscle="${slug}" class="${cls}"><title>${title}</title>${shapes}</g>`;
     }
@@ -887,9 +1185,9 @@
         const t = hubTint(m);
         const label = MUSCLE_LABELS[m] + (t ? ' — ' + t.label : '');
         const dot = t ? `<span class="inline-block w-2 h-2 rounded-full mr-1 align-baseline ${t.dot}" aria-hidden="true"></span>` : '';
-        return `<button data-action="open-muscle-chart" data-muscle="${m}" title="${esc(label)}" aria-label="${esc(label)}" class="px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-400">${dot}${MUSCLE_LABELS[m]}</button>`;
+        return `<button data-action="open-muscle-chart" data-muscle="${m}" title="${esc(label)}" aria-label="${esc(label)}" class="px-2.5 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-300 hover:border-accent hover:text-accent-soft">${dot}${MUSCLE_LABELS[m]}</button>`;
       }).join('');
-      const modeBtn = (v, label) => `<button data-action="map-mode" data-mode="${v}" aria-pressed="${mode === v}" class="px-2.5 py-1 text-xs leading-none transition-colors ${mode === v ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${label}</button>`;
+      const modeBtn = (v, label) => `<button data-action="map-mode" data-mode="${v}" aria-pressed="${mode === v}" class="px-2.5 py-1 text-xs leading-none transition-colors ${mode === v ? 'bg-accent text-accent-on' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${label}</button>`;
       const modeToggle = `<div class="flex justify-center mb-2">
           <div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">${modeBtn('strength', 'Strength')}${modeBtn('freq', 'Frequency')}</div>
         </div>`;
@@ -905,7 +1203,7 @@
           : '<div class="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-3">Set your bodyweight to see strength levels</div>';
       }
       const bwBtn = demo || mode === 'freq' ? '' : `<div class="text-center mt-2">
-          <button data-action="open-bw-editor" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300">Bodyweight: ${bodyweightKg ? esc(fmtW(bodyweightKg) + ' ' + weightUnit) + ' · edit' : '— · set'}</button>
+          <button data-action="open-bw-editor" class="text-xs text-accent-text hover:text-accent-soft">Bodyweight: ${bodyweightKg ? esc(fmtW(bodyweightKg) + ' ' + weightUnit) + ' · edit' : '— · set'}</button>
         </div>`;
       return `<div data-body-diagram class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
         ${modeToggle}
@@ -947,7 +1245,7 @@
             <input id="bw-input" type="number" min="0" step="any" inputmode="decimal" placeholder="bodyweight (${weightUnit})" class="${inp} w-full pr-9">
             <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
           </div>
-          <button data-action="save-bw" class="w-full mt-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Save</button>
+          <button data-action="save-bw" class="w-full mt-4 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-accent-on text-sm font-medium">Save</button>
         </div>`;
     }
     function bwEditorHtml() {
@@ -1200,7 +1498,7 @@
     }
 
     function metricToggleHtml(metrics, active) {
-      return `<div class="flex flex-wrap gap-1.5 mb-2">${metrics.map((m) => `<button data-action="chart-metric" data-metric="${m}" class="px-2.5 py-1 rounded-lg text-xs transition-colors ${active === m ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${METRIC_LABELS[m]}</button>`).join('')}</div>`;
+      return `<div class="flex flex-wrap gap-1.5 mb-2">${metrics.map((m) => `<button data-action="chart-metric" data-metric="${m}" class="px-2.5 py-1 rounded-lg text-xs transition-colors ${active === m ? 'bg-accent text-accent-on' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${METRIC_LABELS[m]}</button>`).join('')}</div>`;
     }
 
     // Hand-rolled SVG line chart: true time scale on X, 0→nice-max on Y.
@@ -1233,14 +1531,14 @@
     }
 
     function muscleEditorBodyHtml() {
-      const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
+      const chip = (m) => `<button data-action="toggle-muscle" data-muscle="${m}" class="px-3 py-1.5 rounded-full text-sm transition-colors ${muscleEditor.selected.includes(m) ? 'bg-accent text-accent-on' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${MUSCLE_LABELS[m]}</button>`;
       return `<div>
           <div class="flex items-center justify-between mb-3">
             <div class="font-semibold">Muscle groups</div>
             <button data-action="close-muscle-editor" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <div class="flex flex-wrap gap-1.5">${MUSCLE_SLUGS.map(chip).join('')}</div>
-          <button data-action="save-muscles" class="w-full mt-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Save</button>
+          <button data-action="save-muscles" class="w-full mt-4 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-accent-on text-sm font-medium">Save</button>
         </div>`;
     }
     function muscleEditorHtml() {
@@ -1252,9 +1550,9 @@
       const metric = exerciseView.metric;
       const metrics = exerciseMetrics(d);
       const tagChips = (d.muscles || []).length
-        ? d.muscles.map((m) => `<span class="px-2 py-0.5 rounded-full bg-violet-600/10 text-violet-700 dark:text-violet-300 text-xs">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
+        ? d.muscles.map((m) => `<span class="px-2 py-0.5 rounded-full bg-accent/10 text-accent-soft text-xs">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
         : '<span class="text-xs italic text-zinc-400 dark:text-zinc-600">no muscle tags</span>';
-      const editBtn = demo ? '' : '<button data-action="edit-muscles" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 px-1 shrink-0">Edit tags</button>';
+      const editBtn = demo ? '' : '<button data-action="edit-muscles" class="text-xs text-accent-text hover:text-accent-soft px-1 shrink-0">Edit tags</button>';
       // Hide a history row (and its chart point) while its delete sits in
       // the undo window, mirroring the home / session lists.
       const visibleSessions = d.sessions.filter((s) => !isPendingDelete('hist', s.session_id));
@@ -1327,9 +1625,9 @@
           const lv = strengthLevel(mv.muscle, strength.current.v, bodyweightKg);
           headline = `<div class="mb-2 text-sm text-zinc-600 dark:text-zinc-300">
             <span class="font-semibold">Est. 1RM: ${fmtMetricVal('e1rm', strength.current.v)} ${weightUnit}</span>
-            ${lv ? `<span class="ml-1 px-2 py-0.5 rounded-full bg-violet-600/10 text-violet-700 dark:text-violet-300 text-xs">${lv.label}</span>` : ''}
+            ${lv ? `<span class="ml-1 px-2 py-0.5 rounded-full bg-accent/10 text-accent-soft text-xs">${lv.label}</span>` : ''}
             <span class="text-xs text-zinc-500">· via</span>
-            <button data-action="open-exercise-chart" data-id="${strength.current.exId}" class="text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 underline decoration-dotted underline-offset-2">${esc(strength.current.exName)}</button>
+            <button data-action="open-exercise-chart" data-id="${strength.current.exId}" class="text-xs text-accent-text hover:text-accent-soft underline decoration-dotted underline-offset-2">${esc(strength.current.exName)}</button>
           </div>`;
         }
         const counts = new Map();
@@ -1515,6 +1813,7 @@
       syncKitSheet('export', !!exportSheet && view === 'home', exportSheetBodyHtml, () => { exportSheet = null; });
       syncKitSheet('muscle-editor', !!muscleEditor && view === 'exercise', muscleEditorBodyHtml, () => { muscleEditor = null; });
       syncKitSheet('bw', !!bwEditor && view === 'progress', bwEditorBodyHtml, () => { bwEditor = null; });
+      syncKitSheet('appearance', !!appearanceSheet, appearanceSheetBodyHtml, () => { appearanceSheet = null; });
     }
 
     // Re-attach kit behaviors after every innerHTML swap. Old handles are
@@ -1665,6 +1964,14 @@
           ps.value = progressHub.query;
           ps.addEventListener('input', () => { progressHub.query = ps.value; renderProgressList(); });
           renderProgressList();
+        }
+      }
+      if (appearanceSheet) {
+        const ci = document.getElementById('accent-custom');
+        if (ci) {
+          // Dragging the picker previews live; letting go commits (one PATCH).
+          ci.addEventListener('input', () => { handle('preview-accent', ci).catch((err) => toast(err.message)); });
+          ci.addEventListener('change', () => { handle('set-accent', ci).catch((err) => toast(err.message)); });
         }
       }
       if (bwEditor) {
@@ -2200,7 +2507,7 @@
       if (r.over && stopwatchStart && !restNotified) {
         restNotified = true;
         buzz([40, 60, 40]);
-        toast('Rest’s up — ' + fmtDur(restTargetSec), true);
+        toast('Rest’s up. ' + fmtDur(restTargetSec) + ' reached.', true);
       }
     }
     // The over state is a colour swap on surfaces tick() is allowed to touch.
@@ -2208,13 +2515,13 @@
       const el = document.getElementById('stopwatch');
       const lbl = document.getElementById('rest-label');
       if (el) el.classList.toggle('text-violet-600', over);
-      if (el) el.classList.toggle('dark:text-violet-400', over);
+      if (el) el.classList.toggle('text-accent-text', over);
       if (lbl) lbl.classList.toggle('text-violet-600', over);
-      if (lbl) lbl.classList.toggle('dark:text-violet-400', over);
+      if (lbl) lbl.classList.toggle('text-accent-text', over);
       const big = document.getElementById('rest-big');
       if (big) {
         big.classList.toggle('text-violet-600', over);
-        big.classList.toggle('dark:text-violet-400', over);
+        big.classList.toggle('text-accent-text', over);
       }
     }
     function restKicker() {
@@ -2268,7 +2575,7 @@
         const major = s % 120 === 0;
         ticks.push(`<span class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full ${major ? 'w-[3px] h-3 bg-zinc-400 dark:bg-zinc-500' : 'w-[2px] h-2 bg-zinc-300 dark:bg-zinc-600'}" style="left: ${p}%"></span>`);
       }
-      const overCls = r.over ? 'text-violet-600 dark:text-violet-400' : '';
+      const overCls = r.over ? 'text-accent-text' : '';
       return `
         <button data-action="toggle-rest-panel" class="w-full text-center" title="Tap to collapse">
           <div id="rest-kicker" class="text-[10px] uppercase tracking-widest text-zinc-500">${restKicker()}</div>
@@ -2288,9 +2595,9 @@
                  aria-valuenow="${restTargetSec}" aria-valuetext="${fmtDur(restTargetSec)}"
                  class="relative flex-1 h-11 cursor-pointer">
               <span class="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-zinc-200 dark:bg-zinc-700"></span>
-              <span data-rest-fill class="absolute left-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-violet-500" style="width: ${pos}%"></span>
+              <span data-rest-fill class="absolute left-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-accent" style="width: ${pos}%"></span>
               ${ticks.join('')}
-              <span data-rest-knob class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-white dark:bg-zinc-800 border-2 border-violet-500 shadow-md" style="left: ${pos}%"></span>
+              <span data-rest-knob class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-white dark:bg-zinc-800 border-2 border-accent shadow-md" style="left: ${pos}%"></span>
             </div>
             <button data-action="rest-step" data-delta="30" aria-label="30 seconds longer" class="shrink-0 w-11 h-11 rounded-full border border-zinc-200 dark:border-zinc-700 text-sm font-semibold text-zinc-600 dark:text-zinc-300 ${hasKit() ? 'un-touch-target' : ''}">+30s</button>
           </div>
@@ -2299,7 +2606,7 @@
           </div>
         </div>
         <div class="flex gap-2 mt-4">
-          <button data-action="rest-reset" class="flex-1 py-2.5 rounded-xl bg-violet-600 text-white font-semibold">${running ? 'Reset' : 'Start'}</button>
+          <button data-action="rest-reset" class="flex-1 py-2.5 rounded-xl bg-accent text-accent-on font-semibold">${running ? 'Reset' : 'Start'}</button>
           <button data-action="rest-cancel" ${running ? '' : 'aria-disabled="true"'} class="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 font-semibold ${running ? 'text-zinc-700 dark:text-zinc-200' : 'text-zinc-400 dark:text-zinc-600'}">Cancel</button>
         </div>`;
     }
@@ -2571,14 +2878,14 @@
       if (!el) return;
       const action = el.dataset.action;
       // backdrop closes only on a direct click, not clicks inside the sheet
-      if ((action === 'close-picker' || action === 'close-import' || action === 'close-export' || action === 'close-muscle-editor' || action === 'close-bw-editor' || action === 'rest-backdrop') && e.target !== el) return;
+      if ((action === 'close-picker' || action === 'close-import' || action === 'close-export' || action === 'close-appearance' || action === 'close-muscle-editor' || action === 'close-bw-editor' || action === 'rest-backdrop') && e.target !== el) return;
       handle(action, el).catch((err) => toast(err.message));
     });
 
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-appearance', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     // Actions that address a set by id (or take the session view away) wait
     // for any optimistic save to settle first, so they can never send a temp
@@ -2898,6 +3205,54 @@
           applyTheme();
           render();
           break;
+        case 'open-appearance':
+          appearanceSheet = { from: view };
+          render();
+          break;
+        case 'close-appearance':
+          appearanceSheet = null;
+          render();
+          break;
+        // Live preview: a preset tap (dataset.accentPreset) or the native
+        // picker's input event. Applies + caches immediately, then persists.
+        // A failed write keeps the preview and reports it, so the color the
+        // user just saw is never silently reverted under them.
+        // Live preview while dragging the native color picker. Deliberately
+        // does NOT re-render: the sheet holds the <input type=color>, and
+        // swapping it out mid-drag closes the OS picker. The accent paints via
+        // CSS variables alone, so the rest of the app still updates.
+        case 'preview-accent': {
+          const hex = normalizeAccent(el.value);
+          if (!hex) break;
+          accentColor = hex;
+          applyAccent(hex);
+          setAccentCache(hex);
+          paintAccentSwatch();
+          break;
+        }
+        case 'set-accent': {
+          const hex = normalizeAccent(el.dataset.accentPreset || el.value);
+          if (!hex) break;
+          accentColor = hex;
+          applyAccent(hex);
+          setAccentCache(hex);
+          render();
+          const r = await api('PATCH', '/api/settings', { accent_color: hex }).catch((err) => { toast(err.message); return null; });
+          if (r && isValidAccent(r.accent_color)) {
+            accentColor = r.accent_color;
+            applyAccent(accentColor);
+            setAccentCache(accentColor);
+            render();
+          }
+          break;
+        }
+        case 'reset-accent':
+          accentColor = null;
+          applyAccent(null);
+          setAccentCache(null);
+          render();
+          await api('PATCH', '/api/settings', { accent_color: null }).catch((err) => toast(err.message));
+          break;
         case 'set-unit': {
           const u = el.dataset.unit;
           if (u === weightUnit) break;
@@ -2946,6 +3301,9 @@
     // ?import=1 deep-links straight to the import sheet (also lets the
     // proposal checks exercise it, since tests can only navigate routes).
     if (params.get('import') === '1') importSheet = { text: '', error: '', busy: false, specCopied: false };
+    // ?appearance=1 deep-links straight to the Appearance sheet (like
+    // ?import=1, so the proposal checks can reach a sheet without clicks).
+    if (params.get('appearance') === '1') appearanceSheet = { from: 'home' };
 
     // The unit preference must be known before the first weights render.
     (async () => {
@@ -2954,6 +3312,11 @@
         isStaging = !!st.staging;
         weightUnit = st.weight_unit === 'lbs' ? 'lbs' : 'kg';
         bodyweightKg = st.bodyweight_kg !== null && st.bodyweight_kg !== undefined ? parseFloat(st.bodyweight_kg) || null : null;
+        // The server value is the truth and wins over the localStorage cache;
+        // writing it back keeps the next first paint flash-free.
+        accentColor = normalizeAccent(st.accent_color);
+        applyAccent(accentColor);
+        setAccentCache(accentColor);
       }
       catch (_) {} // default to kg / no bodyweight — never block the app on the setting
       // ?session=<id> deep-links straight into that session's view, and
