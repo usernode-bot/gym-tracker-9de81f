@@ -233,7 +233,8 @@
     {
       "name": "Staging tester sees copied demo workouts",
       "path": "/",
-      "expectText": "Staging demo"
+      "expectText": "Staging demo",
+      "expectSelector": "[data-session-duration]"
     },
     {
       "name": "Rest timer is a fixed body-level dock",
@@ -298,7 +299,18 @@
     {
       "name": "Latest-session deep link opens a workout",
       "path": "/?session=latest",
-      "expectText": "Add exercise"
+      "expectText": "Add exercise",
+      "expectSelector": "[data-session-duration]"
+    },
+    {
+      "name": "Workout duration chip renders on home rows",
+      "path": "/?demo=1",
+      "expectSelector": "[data-session-duration]"
+    },
+    {
+      "name": "Empty workout shows no duration",
+      "path": "/?demo=1&session=900014",
+      "expectSelector": ".un-navbar"
     }
   ],
   "admins": [

@@ -339,7 +339,8 @@ app.get('/api/sessions', wrap(async (req, res) => {
             (SELECT string_agg(e2.name, ', ' ORDER BY se2.created_at, se2.id)
              FROM session_exercises se2
              JOIN exercises e2 ON e2.id = se2.exercise_id
-             WHERE se2.session_id = s.id) AS exercise_names
+             WHERE se2.session_id = s.id) AS exercise_names,
+            EXTRACT(EPOCH FROM (MAX(st.created_at) FILTER (WHERE st.created_at <= s.started_at + INTERVAL '12 hours') - s.started_at))::int AS duration_seconds
      FROM workout_sessions s
      LEFT JOIN session_exercises se ON se.session_id = s.id
      LEFT JOIN sets st ON st.session_exercise_id = se.id
@@ -356,7 +357,13 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   const sid = idParam(req.params.id);
   if (!sid) return res.status(404).json({ error: 'Session not found' });
   const s = (await pool.query(
-    'SELECT id, started_at, note FROM workout_sessions WHERE id = $1 AND user_id = $2',
+    `SELECT s.id, s.started_at, s.note,
+            MAX(st.created_at) FILTER (WHERE st.created_at <= s.started_at + INTERVAL '12 hours') AS last_set_at
+     FROM workout_sessions s
+     LEFT JOIN session_exercises se ON se.session_id = s.id
+     LEFT JOIN sets st ON st.session_exercise_id = se.id
+     WHERE s.id = $1 AND s.user_id = $2
+     GROUP BY s.id`,
     [sid, uid]
   )).rows[0];
   if (!s) return res.status(404).json({ error: 'Session not found' });
@@ -404,6 +411,10 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
     id: s.id,
     started_at: s.started_at,
     note: s.note,
+    duration_seconds: s.last_set_at
+      ? Math.max(0, Math.round((new Date(s.last_set_at) - new Date(s.started_at)) / 1000))
+      : null,
+    last_set_at: s.last_set_at,
     entries: entries.map((e) => ({
       id: e.id,
       exercise_id: e.exercise_id,
@@ -1233,7 +1244,10 @@ async function seedStagingDemo() {
       (900010, 900001, NOW() - INTERVAL '21 days', 'Staging demo workout note — pull day'),
       (900011, 900001, NOW() - INTERVAL '14 days', NULL),
       (900012, 900001, NOW() - INTERVAL '7 days', 'Staging demo workout note — short on time'),
-      (900013, 900001, NOW() - INTERVAL '4 days', NULL)
+      (900013, 900001, NOW() - INTERVAL '4 days', NULL),
+      -- Issue #44: an empty workout with no entries/sets, so the
+      -- "workout with no duration" row state is visible and testable.
+      (900014, 900001, NOW() - INTERVAL '3 days', NULL)
     ON CONFLICT (id) DO NOTHING
   `);
   await pool.query(`
