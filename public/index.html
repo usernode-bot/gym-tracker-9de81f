@@ -366,6 +366,22 @@
     function fmtDur(s) {
       return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
     }
+    // Compact duration for card chips: "31 min" under an hour, "1 hr 05"
+    // at or above. Only minutes are shown, matching the "Last time" panel's
+    // small gray meta treatment.
+    function fmtChip(s) {
+      const m = Math.round(s / 60);
+      if (m < 60) return m + ' min';
+      const h = Math.floor(m / 60);
+      return h + ' hr ' + String(m % 60).padStart(2, '0');
+    }
+    // Ticking session line: m:ss below an hour, h:mm:ss at or above.
+    function fmtElapsed(s) {
+      if (s < 3600) return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      const h = Math.floor(s / 3600);
+      const rest = s % 3600;
+      return h + ':' + String(Math.floor(rest / 60)).padStart(2, '0') + ':' + String(rest % 60).padStart(2, '0');
+    }
     function parseDur(v) {
       const t = String(v || '').trim();
       if (/^\d+$/.test(t)) return parseInt(t, 10);
@@ -552,7 +568,7 @@
           <div data-swipe="session:${s.id}" class="${rowCls}">
             <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
               <div class="font-medium">${fmtDate(s.started_at)}</div>
-              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
+              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}${s.duration_seconds ? ` · <span data-session-duration>${fmtChip(s.duration_seconds)}</span>` : ''}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
               ${s.note ? `<div class="text-xs italic text-amber-700 dark:text-amber-200/80 truncate mt-0.5">${esc(s.note)}</div>` : ''}
             </button>
@@ -622,6 +638,14 @@
       const lt = en.last_time
         ? `<div class="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg px-2.5 py-1.5">Last time · ${fmtDateShort(en.last_time.started_at)} — <span class="font-mono break-words">${esc(fmtSetList(en.last_time.sets))}</span></div>`
         : '';
+      // Per-exercise duration: from when the exercise was added to the
+      // workout to its last logged set. Hidden below a minute or with no sets.
+      const entryDur = en.sets.length && en.created_at
+        ? (new Date(en.sets[en.sets.length - 1].created_at).getTime() - new Date(en.created_at).getTime()) / 1000
+        : 0;
+      const entryDurHtml = entryDur >= 60
+        ? `<div data-entry-duration class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">${fmtChip(entryDur)}</div>`
+        : '';
       // Drop sets chain onto the previous set: they don't advance the set
       // number and show a ↘ marker in the number slot instead.
       let setNum = 0;
@@ -646,6 +670,7 @@
             <button data-action="open-exercise-chart" data-id="${en.exercise_id}" title="View progress" class="font-semibold text-left min-w-0 break-words hover:text-violet-700 dark:hover:text-violet-300">${esc(en.name)} <span class="text-xs opacity-70">📈</span></button>
             <button data-action="delete-entry" data-entry="${en.id}" class="x-delete un-touch-target shrink-0 text-zinc-400 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 px-1" title="Remove exercise">✕</button>
           </div>
+          ${entryDurHtml}
           ${noteHtml}
           ${lt}
           <div class="mt-2">${setRows}</div>
@@ -715,6 +740,31 @@
       return legacySheetWrap('close-picker', pickerBodyHtml(), { maxH: '75dvh', cls: 'flex flex-col' });
     }
 
+    // Session duration readout: ticks live while the session is still
+    // active (last log within an hour) and freezes at the
+    // start-to-last-set span otherwise. Hidden entirely when the session
+    // has no logged sets yet. Derived from the local payload on every
+    // call, so optimistic saves and undo-window deletes stay consistent.
+    function sessionElapsedReadout() {
+      if (!session) return null;
+      const startMs = new Date(session.started_at).getTime();
+      let lastMs = startMs;
+      let hasSets = false;
+      for (const en of session.entries) {
+        if (en.created_at) lastMs = Math.max(lastMs, new Date(en.created_at).getTime());
+        for (const st of en.sets) {
+          hasSets = true;
+          if (st.created_at) lastMs = Math.max(lastMs, new Date(st.created_at).getTime());
+        }
+      }
+      if (!hasSets) return null;
+      const active = Date.now() - lastMs < 60 * 60 * 1000;
+      const secs = active
+        ? Math.max(0, Math.floor((Date.now() - startMs) / 1000))
+        : Math.max(0, Math.round((lastMs - startMs) / 1000));
+      return { active, text: fmtElapsed(secs) };
+    }
+
     function sessionHtml() {
       const visibleEntries = session.entries.filter((en) => !isPendingDelete('entry', en.id));
       const cards = visibleEntries.length
@@ -727,6 +777,10 @@
           : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
       return `
         ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
+        ${(() => {
+          const r = sessionElapsedReadout();
+          return r ? `<div id="session-elapsed" data-session-elapsed class="text-xs text-zinc-500 mb-3">Duration ${esc(r.text)}</div>` : '';
+        })()}
         ${sNote}
         <div class="space-y-3">${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
@@ -2176,6 +2230,13 @@
         restNotified = false;
         renderRestDock();
         return;
+      }
+      // Session duration line: same pure-readout rule as the stopwatch —
+      // textContent only, recomputed from the local payload each second.
+      const sel = document.getElementById('session-elapsed');
+      if (sel && view === 'session') {
+        const sr = sessionElapsedReadout();
+        if (sr && sr.active) sel.textContent = 'Duration ' + sr.text;
       }
       const r = restReadout();
       const wasOver = el.dataset.over === '1';
