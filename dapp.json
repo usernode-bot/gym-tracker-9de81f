@@ -21,6 +21,48 @@
       "expectSelector": "[data-action=\"set-theme\"]"
     },
     {
+      "name": "Appearance sheet opens",
+      "path": "/?appearance=1",
+      "expectSelector": "[data-action=\"set-accent\"]"
+    },
+    {
+      "name": "Appearance entry point on home",
+      "path": "/",
+      "expectSelector": "[data-action=\"open-appearance\"]"
+    },
+    {
+      "name": "Preset swatches render",
+      "path": "/?appearance=1",
+      "expectSelector": "[data-accent-preset]"
+    },
+    {
+      "name": "Custom color picker renders",
+      "path": "/?appearance=1",
+      "expectSelector": "#accent-custom"
+    },
+    {
+      "name": "Default reset renders",
+      "path": "/?appearance=1",
+      "expectSelector": "[data-action=\"reset-accent\"]"
+    },
+    {
+      "name": "Accent applies without demo data",
+      "path": "/",
+      "expectSelector": "[data-action=\"open-appearance\"]"
+    },
+    {
+      "id": "appearance.presets",
+      "name": "Appearance presets recolor the app",
+      "path": "/?appearance=1",
+      "expectSelector": "[data-accent-preset]",
+      "visual": true,
+      "impact": [
+        "public/index.html",
+        "server.js",
+        "dapp.json"
+      ]
+    },
+    {
       "name": "Swipeable session rows render",
       "path": "/?demo=1",
       "expectSelector": "[data-swipe]"

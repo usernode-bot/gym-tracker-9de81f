@@ -964,12 +964,14 @@ app.post('/api/import', wrap(async (req, res) => {
 app.get('/api/settings', wrap(async (req, res) => {
   const uid = readUserId(req);
   const { rows } = await pool.query(
-    'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
+    'SELECT weight_unit, bodyweight_kg, accent_color FROM user_settings WHERE user_id = $1',
     [uid]
   );
   res.json({
     weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
     bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    // Per-user accent color (hex), or null for the app's default violet.
+    accent_color: rows[0] && rows[0].accent_color ? rows[0].accent_color : null,
     // Reported so the client can honour the ?logset=1 automation hook, which
     // writes a set and therefore only runs in a preview. No feature of the
     // app is gated on this.
@@ -983,7 +985,8 @@ app.patch('/api/settings', wrap(async (req, res) => {
   const body = req.body || {};
   const hasUnit = Object.prototype.hasOwnProperty.call(body, 'weight_unit');
   const hasBw = Object.prototype.hasOwnProperty.call(body, 'bodyweight_kg');
-  if (!hasUnit && !hasBw) {
+  const hasAccent = Object.prototype.hasOwnProperty.call(body, 'accent_color');
+  if (!hasUnit && !hasBw && !hasAccent) {
     return res.status(400).json({ error: 'Nothing to update' });
   }
   if (hasUnit && body.weight_unit !== 'kg' && body.weight_unit !== 'lbs') {
@@ -997,21 +1000,31 @@ app.patch('/api/settings', wrap(async (req, res) => {
     }
     bw = Math.round(bw * 100) / 100;
   }
+  // Accent color: a 6-digit hex, or explicit null to fall back to the default.
+  let accent = null;
+  if (hasAccent && body.accent_color !== null) {
+    if (typeof body.accent_color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(body.accent_color)) {
+      return res.status(400).json({ error: 'accent_color must be a hex color like #7c3aed, or null' });
+    }
+    accent = body.accent_color.toLowerCase();
+  }
   await pool.query(
-    `INSERT INTO user_settings (user_id, weight_unit, bodyweight_kg)
-     VALUES ($1, COALESCE($2, 'kg'), $3)
+    `INSERT INTO user_settings (user_id, weight_unit, bodyweight_kg, accent_color)
+     VALUES ($1, COALESCE($2, 'kg'), $3, $5)
      ON CONFLICT (user_id) DO UPDATE SET
        weight_unit = COALESCE($2, user_settings.weight_unit),
-       bodyweight_kg = CASE WHEN $4 THEN $3 ELSE user_settings.bodyweight_kg END`,
-    [req.user.id, hasUnit ? body.weight_unit : null, hasBw ? bw : null, hasBw]
+       bodyweight_kg = CASE WHEN $4 THEN $3 ELSE user_settings.bodyweight_kg END,
+       accent_color = CASE WHEN $6 THEN $5 ELSE user_settings.accent_color END`,
+    [req.user.id, hasUnit ? body.weight_unit : null, hasBw ? bw : null, hasBw, accent, hasAccent]
   );
   const { rows } = await pool.query(
-    'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
+    'SELECT weight_unit, bodyweight_kg, accent_color FROM user_settings WHERE user_id = $1',
     [req.user.id]
   );
   res.json({
     weight_unit: rows[0].weight_unit,
     bodyweight_kg: rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    accent_color: rows[0].accent_color ? rows[0].accent_color : null,
   });
 }));
 
@@ -1130,6 +1143,8 @@ async function migrate() {
   // Bodyweight (kg, like every stored weight) powers the strength-level
   // categories; NULL = not set, levels stay hidden.
   await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bodyweight_kg NUMERIC(5,2)`);
+  // Per-user accent color: a 6-digit hex, NULL = the app's default violet.
+  await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS accent_color TEXT`);
   // Every row is per-user workout content the UI gates to its owner, so the
   // whole chain is private (staging gets schema only, no prod rows).
   await pool.query(`COMMENT ON TABLE exercises IS 'staging:private'`);
