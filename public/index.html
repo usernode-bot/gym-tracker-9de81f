@@ -373,6 +373,18 @@
       if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
       return NaN;
     }
+
+    // Whole-workout duration, minutes precision: "42 min", "1 h 12 min".
+    // Deliberately a different format from fmtDur (m:ss), which stays for
+    // individual time-type sets.
+    function fmtSessionDur(sec) {
+      if (!Number.isFinite(sec) || sec <= 0) return null;
+      const min = Math.floor(sec / 60);
+      if (min < 60) return Math.max(1, min) + ' min';
+      const h = Math.floor(min / 60);
+      const m = min % 60;
+      return m ? h + ' h ' + m + ' min' : h + ' h';
+    }
     function fmtSet(s) {
       const side = s.side === 'left' ? 'L ' : s.side === 'right' ? 'R ' : '';
       if (s.set_type === 'reps') return side + s.reps + ' × ' + fmtW(s.weight) + ' ' + weightUnit;
@@ -552,7 +564,7 @@
           <div data-swipe="session:${s.id}" class="${rowCls}">
             <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
               <div class="font-medium">${fmtDate(s.started_at)}</div>
-              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
+              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}${s.duration_seconds != null ? `<span data-session-duration="1"> · ${fmtSessionDur(s.duration_seconds)}</span>` : ''}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
               ${s.note ? `<div class="text-xs italic text-amber-700 dark:text-amber-200/80 truncate mt-0.5">${esc(s.note)}</div>` : ''}
             </button>
@@ -715,6 +727,47 @@
       return legacySheetWrap('close-picker', pickerBodyHtml(), { maxH: '75dvh', cls: 'flex flex-col' });
     }
 
+    // ---------- session duration (derived, never stored) ----------
+    // A session's duration is start -> last logged set, within 12 hours of
+    // the start (same window the server applies). Past the window the value
+    // is frozen: a set added to an old workout cannot inflate its duration.
+    const SESSION_WINDOW_MS = 12 * 60 * 60 * 1000;
+    let durTicker = null; // the single 30s interval while a session is open
+    function inWindow(startedMs, atMs) {
+      return atMs - startedMs <= SESSION_WINDOW_MS;
+    }
+    function liveDurationSec(session) {
+      // Live elapsed for a session still inside its 12h window; otherwise the
+      // server-derived total (or null). Sets without one yet (brand-new
+      // session) show the running elapsed line instead.
+      const startedMs = new Date(session.started_at).getTime();
+      if (inWindow(startedMs, Date.now())) {
+        return Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+      }
+      return session.duration_seconds != null ? session.duration_seconds : null;
+    }
+    function sessionDurationHtml() {
+      const sec = liveDurationSec(session);
+      if (sec == null) return '';
+      return `<div data-session-duration="1" data-duration-live="${inWindow(new Date(session.started_at).getTime(), Date.now()) ? 1 : 0}" class="text-xs text-zinc-500 dark:text-zinc-400 -mt-1 mb-2">${fmtSessionDur(sec)}</div>`;
+    }
+    // 30s tick, text-only: mirrors the rest timer's tick() discipline so a
+    // repaint can never disturb typing or a mid-swipe row.
+    function tickSessionDuration() {
+      const el = document.querySelector('#app [data-session-duration][data-duration-live="1"]');
+      if (!el || !session) return;
+      const sec = liveDurationSec(session);
+      if (sec == null) return;
+      el.textContent = fmtSessionDur(sec);
+    }
+    function startDurTicker() {
+      stopDurTicker();
+      durTicker = setInterval(tickSessionDuration, 30000);
+    }
+    function stopDurTicker() {
+      if (durTicker) { clearInterval(durTicker); durTicker = null; }
+    }
+
     function sessionHtml() {
       const visibleEntries = session.entries.filter((en) => !isPendingDelete('entry', en.id));
       const cards = visibleEntries.length
@@ -725,8 +778,10 @@
         : session.note
           ? `<button data-action="session-note" data-note="session" class="block w-full text-left mb-3 text-sm italic leading-snug whitespace-pre-wrap break-words text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
           : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
+      const durLine = sessionDurationHtml();
       return `
         ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
+        ${durLine}
         ${sNote}
         <div class="space-y-3">${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
@@ -1465,6 +1520,7 @@
         restoreFocus(focused);
         wireNative();
         tick();
+        if (view === 'session') startDurTicker(); else stopDurTicker();
       };
       if (hasKit() && nav) unNative.transition(apply, { type: nav });
       else apply();
@@ -1978,6 +2034,7 @@
         setRowValues(type, body)
       );
       en.sets.push(row);
+      extendLocalSessionDuration(en); // derived duration moves with the newest set (12h window)
       stopwatchStart = Date.now(); // logging a set (re)starts the rest timer
       restNotified = false; // ...and this rest gets to announce its own end
       openForm = null; // close on the press; the next "+ Add set" prefills from this set
@@ -2045,6 +2102,33 @@
         const i = en.sets.findIndex((s) => s.id === id);
         if (i >= 0) { en.sets.splice(i, 1); return; }
       }
+    }
+
+    // Duration bookkeeping for the local session payload. The server derives
+    // duration from set created_at inside a 12h window; these two keep the
+    // optimistic view in step without a re-fetch (issue #43 pattern).
+    function extendLocalSessionDuration(en) {
+      if (!session || !en || en.session_id !== session.id) return;
+      const startedMs = new Date(session.started_at).getTime();
+      const atMs = Date.now();
+      if (!inWindow(startedMs, atMs)) return;
+      const sec = Math.max(0, Math.floor((atMs - startedMs) / 1000));
+      session.duration_seconds = session.duration_seconds == null ? sec : Math.max(session.duration_seconds, sec);
+    }
+    function recomputeLocalSessionDuration() {
+      if (!session) return;
+      const startedMs = new Date(session.started_at).getTime();
+      let maxMs = null;
+      for (const en of session.entries) {
+        if (isPendingDelete('entry', en.id)) continue;
+        for (const st of en.sets) {
+          if (isPendingDelete('set', st.id)) continue;
+          const t = new Date(st.created_at).getTime();
+          if (Number.isFinite(t) && inWindow(startedMs, t) && (maxMs == null || t > maxMs)) maxMs = t;
+        }
+      }
+      session.duration_seconds = maxMs == null ? null : Math.max(0, Math.round((maxMs - startedMs) / 1000));
+      rerenderInPlace();
     }
     // A background re-render must not swallow what is being typed into a set
     // form that has since been opened (the draft is only read on submit).
@@ -2491,6 +2575,11 @@
         failed = true;
         toast(err.message);
       }
+      if (!failed && view === 'session' && session && (pd.kind === 'set' || pd.kind === 'entry')) {
+        // Optimistic duration update (issue #44): the deleted row(s) shrink
+        // the derived duration immediately, before the refetch below.
+        recomputeLocalSessionDuration();
+      }
       if (failed || !opts || !opts.noRefresh) {
         // carry in-progress set-form typing across the re-render
         const form = document.getElementById('set-form');
@@ -2606,6 +2695,7 @@
           startPendingDelete('session', +el.dataset.id);
           break;
         case 'back-home':
+          stopDurTicker();
           openForm = null; editingNote = null; editingSessionNote = false; picker = null;
           progressHub = null; exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
           pendingNav = 'pop';
