@@ -221,6 +221,21 @@
       "expectSelector": ".un-group"
     },
     {
+      "name": "Session duration line renders",
+      "path": "/?demo=1&session=900002",
+      "expectText": "Duration"
+    },
+    {
+      "name": "Per-exercise duration renders",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-entry-duration]"
+    },
+    {
+      "name": "Home cards show session duration",
+      "path": "/?demo=1",
+      "expectSelector": "[data-session-duration]"
+    },
+    {
       "name": "Drop-set switch renders in the set form",
       "path": "/?demo=1&session=900002&addset=1",
       "expectSelector": ".un-switch"
