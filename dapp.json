@@ -171,6 +171,21 @@
       "expectSelector": "[data-action=\"map-mode\"]"
     },
     {
+      "id": "progress.exercise-search",
+      "visual": true,
+      "impact": [
+        "public/index.html"
+      ],
+      "name": "Exercise search filters the list by name",
+      "path": "/?demo=1&progress=1&progressq=squat",
+      "expectText": "Staging demo squat"
+    },
+    {
+      "name": "Exercise search shows a friendly empty state",
+      "path": "/?demo=1&progress=1&progressq=zzzz",
+      "expectText": "No exercises match your search"
+    },
+    {
       "name": "Frequency mode shows the growth legend",
       "path": "/?demo=1&progress=1&freq=1",
       "expectText": "On track"
