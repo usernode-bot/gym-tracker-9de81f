@@ -121,8 +121,12 @@ view. All workout data is strictly private per user.
   handling with no kit. `tick()` is a pure readout update (textContent
   + progress width) so a 1 Hz repaint can't yank the knob mid-drag;
   all structural changes go through `renderRestDock()`.
-  `&rest=1` (with `&session=<id>`) arms the timer and opens the card
-  for the dapp.json checks. The whole thing lives in a permanent
+  One-tap presets (30/60/90/120s) start the countdown in the same
+  tap (target + start together); a preset that is already the target
+  restarts it. `&rest=1` (with `&session=<id>`) arms the timer and
+  opens the card for the dapp.json checks; `&restpreset=30|60|90|120`
+  starts that preset directly. The end-of-rest toast reads
+  "Rest done · <length>" (no em dash in user-facing copy). The whole thing lives in a permanent
   body-level `#rest-dock` (outside `#app`, shown/hidden by `render()`
   for the session view) — the one bottom-anchored surface that
   deliberately does **not** consume `--un-kb-inset` and never

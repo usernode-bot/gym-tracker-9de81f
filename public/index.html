@@ -231,6 +231,7 @@
         <span class="absolute left-0 bottom-0 h-[2px] bg-violet-500 transition-none" data-rest-progress style="width: 0%"></span>
       </button>
     </div>
+    <div id="rest-presets" data-rest-presets class="mt-1.5 flex justify-center gap-2"></div>
     <div id="rest-card" class="hidden rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-2xl p-4"></div>
   </div>
 
@@ -2200,7 +2201,7 @@
       if (r.over && stopwatchStart && !restNotified) {
         restNotified = true;
         buzz([40, 60, 40]);
-        toast('Rest’s up — ' + fmtDur(restTargetSec), true);
+        toast('Rest done · ' + fmtDur(restTargetSec), true);
       }
     }
     // The over state is a colour swap on surfaces tick() is allowed to touch.
@@ -2224,6 +2225,22 @@
     function restSubText() {
       if (!stopwatchStart) return 'No rest running · ' + fmtDur(restTargetSec) + ' target';
       return fmtDur(restElapsed()) + ' elapsed · ' + fmtDur(restTargetSec) + ' target';
+    }
+
+    // One-tap presets (issue: add a rest timer between sets). A tap picks
+    // the target AND starts counting from now in the same touch — no second
+    // tap on Start. A preset that's already the target restarts the rest,
+    // which is what "start a 60" means when 60 is selected. The dial and
+    // ±30s buttons still exist for anything else; startRestTarget() keeps
+    // the "did the target move?" bookkeeping in one place.
+    const REST_PRESETS = [30, 60, 90, 120];
+    function startRestTarget(sec) {
+      const before = restTargetSec;
+      setRestTarget(sec);
+      stopwatchStart = Date.now();
+      restNotified = false;
+      if (before !== restTargetSec) paintRestTarget();
+      renderRestDock();
     }
     // Repaints everything a target change moves — knob, fill, value, aria,
     // readout — WITHOUT re-rendering the card. Dragging the dial or tapping
@@ -2301,7 +2318,8 @@
         <div class="flex gap-2 mt-4">
           <button data-action="rest-reset" class="flex-1 py-2.5 rounded-xl bg-violet-600 text-white font-semibold">${running ? 'Reset' : 'Start'}</button>
           <button data-action="rest-cancel" ${running ? '' : 'aria-disabled="true"'} class="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 font-semibold ${running ? 'text-zinc-700 dark:text-zinc-200' : 'text-zinc-400 dark:text-zinc-600'}">Cancel</button>
-        </div>`;
+        </div>
+        ${restPresetsHtml()}`;
     }
 
     // Owns the dock's inner markup. Called only on STATE changes (expand,
@@ -2322,8 +2340,29 @@
       dock.classList.toggle('z-40', open);
       dock.classList.toggle('z-10', !open);
       card.innerHTML = open ? restCardHtml() : '';
+      renderRestPresetRow();
       if (open) wireRestDial();
       tick();
+    }
+
+    // The 30/60/90/120 chips: one tap picks the length and starts the
+    // countdown (rest-preset), the active length is a filled violet chip.
+    // Presets keep the same word and shape everywhere they appear (idle
+    // pill row, expanded card, keyboard row) so the dock reads as one
+    // control, not three.
+    function restPresetsHtml() {
+      return REST_PRESETS.map((sec) => {
+        const active = restTargetSec === sec;
+        const base = 'px-3 py-1 rounded-full text-xs font-semibold border transition-colors';
+        const activeCls = 'bg-violet-600 border-violet-600 text-white dark:border-violet-500';
+        const idleCls = 'bg-white text-zinc-600 border-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:border-zinc-700';
+        return `<button data-action="rest-preset" data-sec="${sec}" aria-pressed="${active ? 'true' : 'false'}" aria-label="Rest ${sec} seconds" class="${base} ${active ? activeCls : idleCls}">${sec}s</button>`;
+      }).join('');
+    }
+    function renderRestPresetRow() {
+      const row = document.getElementById('rest-presets');
+      if (!row) return;
+      row.innerHTML = restPresetsHtml();
     }
 
     // Hand-rolled 30s-step dial: the kit ships no slider, so this is Pointer
@@ -2893,6 +2932,9 @@
         case 'rest-step':
           commitRestTarget(restTargetSec + parseInt(el.dataset.delta || '0', 10));
           break;
+        case 'rest-preset':
+          startRestTarget(parseInt(el.dataset.sec || '0', 10));
+          break;
         case 'set-theme':
           setThemePref(el.dataset.theme);
           applyTheme();
@@ -3017,6 +3059,13 @@
             restNotified = false;
             restExpanded = true;
             renderRestDock();
+          }
+          // &restpreset=30|60|90|120 is the one-tap-preset deep link: the
+          // dock starts counting the given preset from now. Not gated on
+          // the environment: it's a UI state link, like &rest=1.
+          const restPresetParam = parseInt(params.get('restpreset') || '', 10);
+          if (Number.isFinite(restPresetParam) && REST_PRESETS.includes(restPresetParam)) {
+            startRestTarget(restPresetParam);
           }
           return;
         } catch (_) {} // unknown/foreign session — fall through to home

@@ -246,6 +246,21 @@
       "expectSelector": "#stopwatch"
     },
     {
+      "name": "One-tap rest presets render",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-rest-presets]"
+    },
+    {
+      "name": "Rest preset deep link starts the countdown",
+      "path": "/?demo=1&session=900002&restpreset=60",
+      "expectSelector": "#stopwatch[data-armed=\"1\"]"
+    },
+    {
+      "name": "Rest preset deep link selects its chip",
+      "path": "/?demo=1&session=900002&restpreset=90",
+      "expectSelector": "[data-action=\"rest-preset\"][data-sec=\"90\"][aria-pressed=\"true\"]"
+    },
+    {
       "name": "Long exercise note renders in full",
       "path": "/?demo=1&session=900002",
       "expectText": "stop two reps short of failure on every working set"
@@ -311,5 +326,11 @@
   "visibility": {
     "build": "public",
     "view": "public"
+  },
+  "inLoopCheckAuth": {
+    "path": "/api/inloop-signin",
+    "body": {
+      "tokenFile": "/tmp/inloop.token"
+    }
   }
 }
