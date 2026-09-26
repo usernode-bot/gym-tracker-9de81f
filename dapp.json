@@ -11,6 +11,11 @@
       "expectText": "Staging demo"
     },
     {
+      "name": "Streak chip renders on home",
+      "path": "/?demo=1",
+      "expectSelector": "[data-streak-chip]"
+    },
+    {
       "name": "Home renders for real user",
       "path": "/",
       "expectText": "Start workout"
