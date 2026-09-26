@@ -332,10 +332,37 @@ app.post('/api/sessions', wrap(async (req, res) => {
 
 app.get('/api/sessions', wrap(async (req, res) => {
   const uid = readUserId(req);
+  // Personal-record count per session: a set is a PR when it strictly beats
+  // every earlier set of the same exercise — heaviest weight for reps sets,
+  // longest duration for time sets (matching what the charts call "best").
+  // The running-max window covers the user's full history in chronological
+  // order, so a PR later in the same workout counts and ties never do.
   const { rows } = await pool.query(
-    `SELECT s.id, s.started_at, s.note,
+    `WITH ordered_sets AS (
+       SELECT se.session_id, st.set_type,
+              COALESCE(st.weight, 0) AS w,
+              COALESCE(st.duration_seconds, 0) AS d,
+              MAX(COALESCE(st.weight, 0)) OVER w_prev AS prev_w,
+              MAX(COALESCE(st.duration_seconds, 0)) OVER w_prev AS prev_d
+       FROM sets st
+       JOIN session_exercises se ON se.id = st.session_exercise_id
+       JOIN workout_sessions s ON s.id = se.session_id
+       WHERE s.user_id = $1
+       WINDOW w_prev AS (
+         PARTITION BY se.exercise_id
+         ORDER BY s.started_at, se.created_at, st.created_at, st.id
+         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+     ), session_prs AS (
+       SELECT session_id, COUNT(*)::int AS pr_count
+       FROM ordered_sets
+       WHERE (set_type = 'reps' AND w > prev_w)
+          OR (set_type = 'time' AND d > prev_d)
+       GROUP BY session_id
+     )
+     SELECT s.id, s.started_at, s.note,
             COUNT(DISTINCT se.id)::int AS exercise_count,
             COUNT(st.id)::int AS set_count,
+            COALESCE(spr.pr_count, 0) AS pr_count,
             (SELECT string_agg(e2.name, ', ' ORDER BY se2.created_at, se2.id)
              FROM session_exercises se2
              JOIN exercises e2 ON e2.id = se2.exercise_id
@@ -343,8 +370,9 @@ app.get('/api/sessions', wrap(async (req, res) => {
      FROM workout_sessions s
      LEFT JOIN session_exercises se ON se.session_id = s.id
      LEFT JOIN sets st ON st.session_exercise_id = se.id
+     LEFT JOIN session_prs spr ON spr.session_id = s.id
      WHERE s.user_id = $1
-     GROUP BY s.id
+     GROUP BY s.id, spr.pr_count
      ORDER BY s.started_at DESC, s.id DESC`,
     [uid]
   );
