@@ -442,6 +442,24 @@ app.delete('/api/sessions/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Raw recent sets for the home screen's weekly volume chart (client-side
+// aggregation, like the other charts). Read-only; ownership is guaranteed by
+// the joins back to workout_sessions.user_id. The 28-day cap covers the
+// current week with room to spare while keeping the payload small.
+app.get('/api/sets/recent', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const { rows } = await pool.query(
+    `SELECT s.started_at, st.set_type, st.reps, st.weight, st.duration_seconds
+     FROM sets st
+     JOIN session_exercises se ON se.id = st.session_exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $1 AND s.started_at >= NOW() - INTERVAL '28 days'
+     ORDER BY s.started_at`,
+    [uid]
+  );
+  res.json({ sets: rows });
+}));
+
 // ---------- Exercises ----------
 
 // Returns the user's FULL exercise list (MRU-first, no LIMIT) — the picker
