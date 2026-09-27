@@ -299,6 +299,51 @@
       "name": "Latest-session deep link opens a workout",
       "path": "/?session=latest",
       "expectText": "Add exercise"
+    },
+    {
+      "name": "Template picker renders on home",
+      "path": "/?demo=1",
+      "expectSelector": "[data-templates]"
+    },
+    {
+      "name": "Template picker lists Push Pull Legs",
+      "path": "/?demo=1",
+      "expectText": "Push day"
+    },
+    {
+      "name": "Template picker lists Leg day",
+      "path": "/?demo=1",
+      "expectText": "Leg day"
+    },
+    {
+      "name": "Templates API is reachable",
+      "path": "/api/templates",
+      "expectText": "Pull day"
+    },
+    {
+      "name": "Starting a template prefills the session",
+      "path": "/?newtemplate=pull",
+      "expectText": "Pull-Up"
+    },
+    {
+      "name": "Templated session prefill renders the first template exercise",
+      "path": "/?newtemplate=pull",
+      "expectText": "Machine Row"
+    },
+    {
+      "name": "Templated session keeps add/remove controls",
+      "path": "/?newtemplate=pull",
+      "expectSelector": "[data-action=\"delete-entry\"]"
+    },
+    {
+      "name": "Push template session lists chest work",
+      "path": "/?newtemplate=push",
+      "expectText": "Barbell Bench Press"
+    },
+    {
+      "name": "Legs template session lists squats",
+      "path": "/?newtemplate=legs",
+      "expectText": "Barbell Back Squat"
     }
   ],
   "admins": [
