@@ -244,7 +244,7 @@
     let view = 'home';        // 'home' | 'session'
     let sessions = [];        // home list
     let session = null;       // session detail payload
-    let picker = null;        // { query, list } when the add-exercise sheet is open
+    let picker = null;        // { query, list, linkMode? } — add-exercise sheet, or the superset linker when linkMode is set
     let exCatalog = null;     // standardized exercise catalog (fetched once, static)
     let openForm = null;      // { entryId, setId|null, draft, error } for the set form
     let pendingFocus = null;  // one-shot: which just-opened surface wireInputs should autofocus on the next render ('set-form' | 'entry-note' | 'session-note' | 'picker' | 'bw')
@@ -613,6 +613,16 @@
       </form>`;
     }
 
+    function supersetGroupHtml(pair) {
+      return `<div data-superset-group class="rounded-xl border border-violet-300 dark:border-violet-900 p-1.5">
+          <div class="flex items-center gap-1 px-1.5 pt-1 pb-0.5">
+            <span data-superset-label class="text-[10px] uppercase tracking-widest text-violet-500 dark:text-violet-400 font-semibold">Superset</span>
+            <button data-action="unlink-superset" data-entry="${pair[0].id}" class="un-touch-target text-[10px] text-zinc-400 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-1 py-0.5">Unlink</button>
+          </div>
+          ${pair.map(entryHtml).join('')}
+        </div>`;
+    }
+
     function entryHtml(en) {
       const noteHtml = editingNote === en.id
         ? `<input id="entry-note-input" data-entry="${en.id}" value="${esc(en.note || '')}" placeholder="Add a note…" maxlength="500" autocomplete="off" class="${inp} w-full mt-1.5">`
@@ -702,9 +712,10 @@
     }
 
     function pickerBodyHtml() {
+      const title = picker && picker.linkMode ? 'Link superset' : 'Add exercise';
       return `<div class="flex flex-col min-h-0">
           <div class="flex items-center justify-between mb-2">
-            <div class="font-semibold">Add exercise</div>
+            <div class="font-semibold">${title}</div>
             <button data-action="close-picker" class="un-touch-target text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2">✕</button>
           </div>
           <input id="picker-search" placeholder="Search or type a new exercise…" autocomplete="off" class="${inp} w-full mb-2">
@@ -717,8 +728,28 @@
 
     function sessionHtml() {
       const visibleEntries = session.entries.filter((en) => !isPendingDelete('entry', en.id));
+      // Grouped superset pairs: each entry may name its partner, so the
+      // session renders its cards as superset groups first, then any
+      // standalone exercises. Only one row of the pair carries the link.
+      const taken = new Set();
+      for (const en of visibleEntries) {
+        if (en.superset != null) taken.add(en.superset);
+      }
+      const chunks = [];
+      const standalone = [];
+      for (const en of visibleEntries) {
+        if (taken.has(en.id)) { taken.delete(en.id); continue; } // partner of a linked row: already grouped
+        const partner = en.superset != null && visibleEntries.some((x) => x.id === en.superset)
+          ? visibleEntries.find((x) => x.id === en.superset)
+          : null;
+        if (partner) {
+          chunks.push([en, partner]);
+        } else {
+          standalone.push(en);
+        }
+      }
       const cards = visibleEntries.length
-        ? visibleEntries.map(entryHtml).join('')
+        ? chunks.map(supersetGroupHtml).concat(standalone.map(entryHtml)).join('')
         : '<div class="text-center text-zinc-500 dark:text-zinc-600 py-10">No exercises yet — add one below.</div>';
       const sNote = editingSessionNote
         ? `<input id="session-note-input" value="${esc(session.note || '')}" placeholder="Add a workout note…" maxlength="500" autocomplete="off" class="${inp} w-full mb-3">`
@@ -729,7 +760,11 @@
         ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
         ${sNote}
         <div class="space-y-3">${cards}</div>
+        ${picker && picker.linkMode
+          ? `<div class="rounded-xl border border-violet-300 dark:border-violet-900 px-3 py-2 mb-2 text-sm">Pick the exercise to pair with <span class="font-semibold">${esc(picker.linkMode.name)}</span></div>`
+          : ''}
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
+        ${visibleEntries.length > 1 && !picker ? `<button data-action="link-superset" data-entry="${visibleEntries[0].id}" data-name="${esc(visibleEntries[0].name)}" class="w-full py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-0 mb-4">🔗 Link superset</button>` : ''}
         ${!hasKit() && picker ? pickerHtml() : ''}`;
     }
 
@@ -778,7 +813,20 @@
       if (!box || !picker) return;
       const q = picker.query.trim();
       const ql = q.toLowerCase();
-      const items = picker.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
+      // Link mode pairs with another exercise already in this session, so
+      // its list is the session's other entries. Add mode adds a new
+      // exercise, so its list is the user's whole exercise library.
+      if (picker.linkMode && session) {
+        const items = session.entries
+          .filter((en) => en.id !== picker.linkMode.id && !isPendingDelete('entry', en.id))
+          .filter((en) => !ql || en.name.toLowerCase().includes(ql));
+        box.innerHTML = items.length
+          ? items.map((en) => `<button data-action="link-superset-pick" data-id="${en.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(en.name)}</span>${typeBadgeHtml(en.exercise_type)}</button>`).join('')
+          : '<div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">No other exercises in this workout</div>';
+        return;
+      }
+      const rawItems = picker.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
+      const items = rawItems;
       const exact = picker.list.some((x) => x.name.toLowerCase() === ql);
       // Standardized catalog suggestions go FIRST: one tap creates the
       // exercise under its canonical name with the catalog's type and muscle
@@ -794,7 +842,7 @@
           }).join('') +
           (items.length ? `<div class="px-3 pt-2 pb-0.5 text-[10px] uppercase tracking-widest text-zinc-500 dark:text-zinc-600">Your exercises</div>` : '')
         : '';
-      html += items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
+      html += items.map((x) => `<button data-action="${picker.linkMode ? 'link-superset-pick' : 'pick-exercise'}" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
       if (q && !exact) {
         // Creating is a two-step choice: the type is picked once, here, and
         // can never be changed afterward — so there's no pre-selected default.
@@ -2121,6 +2169,7 @@
       editingSessionNote = false;
       importSheet = null;
       exportSheet = null;
+      if (picker && picker.linkMode) picker = null;
       picker = null;
       seedStopwatch();
       render();
@@ -2712,6 +2761,25 @@
           picker = null;
           render();
           break;
+        case 'link-superset': {
+          picker = { query: '', list: [], linkMode: { id: +el.dataset.entry, name: el.dataset.name } };
+          const list = await api('GET', '/api/exercises').then((r) => r.exercises);
+          if (picker) { picker.list = list; pendingFocus = 'picker'; }
+          render();
+          break;
+        }
+        case 'link-superset-pick': {
+          const mode = picker && picker.linkMode;
+          if (!mode) break;
+          await api('POST', '/api/supersets', { a_id: mode.id, b_id: +el.dataset.id });
+          picker = null;
+          await refreshSession();
+          break;
+        }
+        case 'unlink-superset':
+          await api('DELETE', '/api/supersets/' + +el.dataset.entry);
+          await refreshSession();
+          break;
         case 'pick-exercise':
           await addExercise(+el.dataset.id);
           break;
@@ -2991,6 +3059,15 @@
           if (params.get('addset') === '1' && session && session.entries.length) {
             const en = session.entries.find((x) => x.sets.length) || session.entries[0];
             await handle('open-add-set', { dataset: { entry: String(en.id) } });
+          }
+          // &superset=1 opens the superset linker straight away on the
+          // session's first exercise — like ?addset=1, a UI-state deep link
+          // so the proposal checks can reach the linking flow without
+          // clicks. Not gated on the environment: the flow it drives is
+          // identical everywhere.
+          if (params.get('superset') === '1' && session && session.entries.length) {
+            const en = session.entries.find((x) => x.superset == null) || session.entries[0];
+            await handle('link-superset', { dataset: { entry: String(en.id), name: en.name } });
           }
           // &logset=1 runs the real log-set flow once: open the add-set form
           // on the first exercise that has sets and submit it, prefilled from

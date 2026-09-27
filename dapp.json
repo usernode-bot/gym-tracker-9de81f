@@ -76,6 +76,21 @@
       "expectSelector": "[data-action=\"delete-entry\"]"
     },
     {
+      "name": "Superset pair renders grouped with a label",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-superset-group]"
+    },
+    {
+      "name": "Superset group shows the Superset label",
+      "path": "/?demo=1&session=900002",
+      "expectText": "Superset"
+    },
+    {
+      "name": "Superset linker picker opens in link mode",
+      "path": "/?demo=1&session=900002&superset=1",
+      "expectSelector": "#picker-search"
+    },
+    {
       "name": "Exercise picker opens with search box",
       "path": "/?demo=1&session=900002&picker=1",
       "expectSelector": "#picker-search"
@@ -204,6 +219,14 @@
       "name": "Native kit script loads",
       "path": "/",
       "expectSelector": "script[src*=\"usernode-native\"]"
+    },
+    {
+      "name": "Superset link survives a reload (visual)",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-superset-group]",
+      "visual": true,
+      "id": "session.superset-group",
+      "impact": ["server.js", "public/index.html"]
     },
     {
       "name": "Safe-area viewport (viewport-fit=cover)",
