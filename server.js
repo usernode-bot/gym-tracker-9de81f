@@ -1460,18 +1460,19 @@ async function seedStagingDemo() {
   // Demo daily bodyweight trend for the Home card (last 30 days). Weight is
   // personal health data, so the real table is staging:private — staging
   // starts EMPTY and needs its own seed. Rows belong to fake demo user
-  // 900001 (never the visitor), are obviously labelled, and are idempotent
-  // via the fixed demo ids. A gentle downward drift gives the Home sparkline
-  // a visible trend; nothing reads this signal for logic that changes
-  // behaviour, so seeding it is purely visual.
+  // 900001 (never the visitor). Idempotent via the unique (user_id, log_date)
+  // conflict target — a long-lived staging DB's existing rows are skipped, so
+  // re-seeding never double-writes. A gentle downward drift gives the Home
+  // sparkline a visible trend; nothing reads this signal for logic that
+  // changes behaviour, so seeding it is purely visual.
   const demoBodyweight = [];
   for (let i = 29; i >= 0; i--) {
     // 80.0 kg drifting down to 78.3 over the month.
     const kg = Math.round((80 - (29 - i) * 0.06) * 10) / 10;
-    demoBodyweight.push(`(900001, 900001, CURRENT_DATE - ${i}, ${kg})`);
+    demoBodyweight.push(`(900001, CURRENT_DATE - ${i}, ${kg})`);
   }
   await pool.query(`
-    INSERT INTO bodyweight_log (id, user_id, log_date, weight_kg)
+    INSERT INTO bodyweight_log (user_id, log_date, weight_kg)
     VALUES ${demoBodyweight.join(',\n      ')}
     ON CONFLICT (user_id, log_date) DO NOTHING
   `);
