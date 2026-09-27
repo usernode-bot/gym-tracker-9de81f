@@ -11,6 +11,24 @@
       "expectText": "Staging demo"
     },
     {
+      "name": "Home bodyweight card renders with demo trend",
+      "path": "/?demo=1",
+      "expectSelector": "#bodyweight-card",
+      "visual": true,
+      "id": "home.bodyweight-card",
+      "impact": ["public/index.html", "server.js"]
+    },
+    {
+      "name": "Home bodyweight sparkline draws the seeded trend",
+      "path": "/?demo=1",
+      "expectSelector": "#bodyweight-card svg polyline"
+    },
+    {
+      "name": "Home bodyweight card shows today input for a signed-in user",
+      "path": "/",
+      "expectSelector": "#bw-today-input"
+    },
+    {
       "name": "Home renders for real user",
       "path": "/",
       "expectText": "Start workout"
