@@ -582,7 +582,7 @@
           ${spark}
         </div>
         ${readonlyOverlay ? `
-        <div class="mt-2.5 text-xs text-zinc-500 dark:text-zinc-500">Staging demo — entries are read-only here</div>`
+        <div class="mt-2.5 text-xs text-zinc-500 dark:text-zinc-500">Staging demo: entries are read-only here.</div>`
         : `
         <div class="flex gap-2 mt-2.5">
           <div class="relative flex-1 min-w-0">
@@ -2164,15 +2164,6 @@
       } catch (_) {} // empty sparkline + input placeholder is a fine fallback
       view = 'home';
       session = null;
-      render();
-    }
-    // Fetch only the sparkline series, for callers that stay on Home and
-    // don't want the full reload (e.g. after logging today's weight).
-    async function loadBodyweight() {
-      try {
-        const bw = await api('GET', '/api/bodyweight');
-        bodyweightSeries = bw.entries;
-      } catch (_) {} // empty sparkline + input placeholder is a fine fallback
       render();
     }
     async function refreshSession() {
