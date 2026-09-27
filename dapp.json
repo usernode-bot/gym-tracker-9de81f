@@ -66,6 +66,36 @@
       "expectSelector": "[data-action=\"set-unit\"]"
     },
     {
+      "name": "Plate calculator entry point on home",
+      "path": "/",
+      "expectSelector": "[data-action=\"open-plates\"]"
+    },
+    {
+      "name": "Plate calculator screen renders",
+      "path": "/?plates=1",
+      "expectSelector": "#plate-target"
+    },
+    {
+      "name": "Plate calculator computes plates per side",
+      "path": "/?plates=1&w=100",
+      "expectText": "100 kg"
+    },
+    {
+      "name": "Plate calculator shows the leftover remainder",
+      "path": "/?plates=1&w=99",
+      "expectText": "Left over"
+    },
+    {
+      "id": "plates.calculator",
+      "name": "Plate calculator flow renders",
+      "path": "/?plates=1&w=100",
+      "expectSelector": "#plate-result",
+      "visual": true,
+      "impact": [
+        "public/index.html"
+      ]
+    },
+    {
       "name": "Session deep link opens the session view",
       "path": "/?demo=1&session=900002",
       "expectText": "Add exercise"

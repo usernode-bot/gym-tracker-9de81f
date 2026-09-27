@@ -252,6 +252,7 @@
     let editingSessionNote = false; // the workout-level note input is open
     let importSheet = null;   // { text, error, busy } while the import sheet is open
     let exportSheet = null;   // { text, filename, count, copied } while the export sheet is open
+    let plateCalc = null;     // { target, bar } while the plate calculator screen is open
     let progressHub = null;   // { query, list, strength } — Progress hub exercise list + per-muscle scores
     let exerciseView = null;  // { data, metric, from, confirmDelete, deleting } — per-exercise chart screen
     let muscleView = null;    // { muscle, data, metric } — per-muscle chart screen
@@ -565,7 +566,8 @@
       return `
         ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() + themeSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
-        <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
+        <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-2">📈 Progress</button>
+        <button data-action="open-plates" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">🧮 Plates</button>
         ${list}
         <div class="flex justify-center gap-6 mt-6">
           <button data-action="export-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
@@ -917,6 +919,103 @@
         ${legend}
         ${bwBtn}
       </div>`;
+    }
+
+    // ---------- plate calculator ----------
+    // Pure client-side tool: no schema, no API. Plate sizes follow the two
+    // conventions the app already speaks: kilogram plates for kg bars, pound
+    // plates for lb bars. The result is a read-only breakdown for the
+    // selected bar: every plate size, how many go on each side, and what is
+    // left over after rounding down to available plates.
+    const BAR_OPTIONS = [
+      { id: 'oly20', short: 'Olympic', barKg: 20, plates: [25, 20, 15, 10, 5, 2.5, 1.25], unit: 'kg' },
+      { id: 'std20', short: 'Standard', barKg: 20, plates: [20, 15, 10, 5, 2.5, 1.25], unit: 'kg' },
+      { id: 'lb45', short: '45 lb', barKg: 45 / LBS_PER_KG, plates: [45, 35, 25, 10, 5, 2.5], unit: 'lbs' },
+      { id: 'custom', short: 'Custom', barKg: null, plates: null, unit: null },
+    ];
+    function calcPlates(target, bar) {
+      // Custom bars are typed in the display unit, so the whole calculation
+      // runs in it and no conversion applies.
+      if (bar.id === 'custom') {
+        const unit = weightUnit;
+        const barW = Number(plateCalc.customBar);
+        const fmtNum = (n) => String(Math.round(n * 100) / 100);
+        if (!Number.isFinite(barW) || barW <= 0) {
+          return { unit, fmtNum, targetBar: Number(target) || 0, sideTotal: 0, rows: [], remainder: 0, hint: 'Enter a bar weight first.' };
+        }
+        return plateMath(Number(target), barW, [20, 15, 10, 5, 2.5, 1.25], unit, fmtNum);
+      }
+      // The calculator's math happens in the bar's own unit: the target and
+      // result are both in it, matching the input's placeholder, so a 45 lb
+      // bar is loaded with real 45 lb plates no matter the display unit.
+      const unit = bar.unit || weightUnit;
+      const targetBar = Number(target);
+      const fmtNum = (n) => {
+        const r = Math.round(n * 100) / 100;
+        return String(r);
+      };
+      return plateMath(targetBar, bar.barKg, bar.plates, unit, fmtNum);
+    }
+    function plateMath(targetBar, barW, plates, unit, fmtNum) {
+      if (!Number.isFinite(targetBar) || targetBar <= 0) {
+        return { unit, fmtNum, targetBar, sideTotal: 0, rows: [], remainder: 0, hint: 'Enter a target weight.' };
+      }
+      if (targetBar <= barW) {
+        return { unit, fmtNum, targetBar, sideTotal: 0, rows: [], remainder: targetBar > 0 ? targetBar - barW : targetBar };
+      }
+      let perSide = Math.round(((targetBar - barW) / 2) * 100) / 100;
+      const sideTotalWanted = perSide;
+      const sizes = (plates || [20, 15, 10, 5, 2.5, 1.25]).slice();
+      const rows = [];
+      for (const size of sizes) {
+        if (perSide < size - 1e-9) continue;
+        const count = Math.floor(perSide / size + 1e-9);
+        rows.push({ size, count });
+        perSide = Math.round((perSide - count * size) * 100) / 100;
+      }
+      const sideTotal = Math.round((sideTotalWanted - perSide) * 100) / 100;
+      return { unit, fmtNum, targetBar, sideTotal, rows, remainder: perSide };
+    }
+    function plateResultHtml(res) {
+      const U = res.unit;
+      if (res.hint) {
+        return `<div class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3 text-sm text-zinc-500 dark:text-zinc-400">${esc(res.hint)}</div>`;
+      }
+      if (!res.rows.length) {
+        return `<div class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3 text-sm text-zinc-500 dark:text-zinc-400">Nothing to add. The bar alone is at or above the target.</div>`;
+      }
+      const rows = res.rows.map((r) => `
+        <div class="un-group-row flex items-baseline gap-3 px-4 py-2.5">
+          <span class="w-16 shrink-0 font-mono">${r.size} ${U}</span>
+          <span class="flex-1 min-w-0 text-sm text-zinc-500 dark:text-zinc-400">per side</span>
+          <span class="font-semibold text-violet-600 dark:text-violet-400">×${r.count}</span>
+        </div>`).join('');
+      const rem = res.remainder > 1e-9
+        ? `<div class="mt-2 rounded-xl bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800/60 p-3 text-sm text-amber-800 dark:text-amber-200/90">Left over: ${res.fmtNum(res.remainder)} ${U}. No plate that small.</div>`
+        : '';
+      return `
+        <div class="un-group">${rows}</div>
+        <div class="mt-2 text-xs text-zinc-500 dark:text-zinc-600">Each side: ${res.fmtNum(res.sideTotal)} ${U} · Total: ${res.fmtNum(res.targetBar)} ${U}</div>
+        ${rem}`;
+    }
+    function platesHtml() {
+      const bar = plateCalc.bar;
+      const res = calcPlates(plateCalc.target, bar);
+      const barBtns = BAR_OPTIONS.map((b) => `<button type="button" data-action="plate-bar" data-bar="${b.id}" class="flex-1 px-2 py-1 rounded-lg text-xs transition-colors ${bar.id === b.id ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${b.short}</button>`).join('');
+      const customBarField = bar.id === 'custom'
+        ? `<div class="relative mt-2"><input id="plate-bar-weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(plateCalc.customBar || '')}" placeholder="bar weight (${weightUnit})" class="${inp} w-full pr-9"><span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span></div>`
+        : '';
+      return `
+        ${headerHtml({ title: '🧮 Plates', subtitle: 'Plates per side for a target weight', backAction: 'back-home', right: unitSwitcherHtml() })}
+        <div class="flex gap-1">${barBtns}</div>
+        ${customBarField}
+        <input id="plate-target" type="number" min="0" step="any" inputmode="decimal" value="${esc(plateCalc.target || '')}" placeholder="target weight (${bar.unit || weightUnit})" class="${inp} w-full mt-2">
+        <div id="plate-result" class="mt-3">${plateResultHtml(res)}</div>
+        <div class="pb-6"></div>`;
+    }
+    function renderPlateResult() {
+      const slot = document.getElementById('plate-result');
+      if (slot && plateCalc) slot.innerHTML = plateResultHtml(calcPlates(plateCalc.target, plateCalc.bar));
     }
 
     function progressHtml() {
@@ -1390,6 +1489,18 @@
       }
     }
 
+    function openPlateCalc() {
+      // Default bar follows the unit preference, matching what the user
+      // actually lifts with: the 45 lb bar for lbs, the 20 kg bar otherwise.
+      const def = weightUnit === 'lbs' ? 'lb45' : 'oly20';
+      plateCalc = { target: '', bar: BAR_OPTIONS.find((b) => b.id === def), customBar: '' };
+      openForm = null; editingNote = null; editingSessionNote = false; picker = null;
+      progressHub = null; exerciseView = null; muscleView = null; muscleEditor = null; bwEditor = null;
+      importSheet = null; exportSheet = null;
+      view = 'plates';
+      render();
+    }
+
     async function openExerciseChart(id, from) {
       const data = await api('GET', '/api/exercises/' + id + '/history');
       const metrics = exerciseMetrics(data);
@@ -1456,6 +1567,7 @@
         const html = view === 'home' ? homeHtml()
           : view === 'session' ? sessionHtml()
           : view === 'progress' ? progressHtml()
+          : view === 'plates' ? platesHtml()
           : view === 'exercise' ? exerciseChartHtml()
           : muscleChartHtml();
         const focused = captureFocus();
@@ -1665,6 +1777,20 @@
           ps.value = progressHub.query;
           ps.addEventListener('input', () => { progressHub.query = ps.value; renderProgressList(); });
           renderProgressList();
+        }
+      }
+      if (view === 'plates' && plateCalc) {
+        const ti = document.getElementById('plate-target');
+        if (ti) {
+          ti.value = plateCalc.target;
+          // Recompute in place, like the picker's live search: the input
+          // keeps focus, only the result slot repaints.
+          ti.addEventListener('input', () => { plateCalc.target = ti.value; renderPlateResult(); });
+        }
+        const bi = document.getElementById('plate-bar-weight');
+        if (bi) {
+          bi.value = plateCalc.customBar;
+          bi.addEventListener('input', () => { plateCalc.customBar = bi.value; renderPlateResult(); });
         }
       }
       if (bwEditor) {
@@ -2578,12 +2704,12 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-plates', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     // Actions that address a set by id (or take the session view away) wait
     // for any optimistic save to settle first, so they can never send a temp
     // id to the server.
-    const SETTLE_BEFORE = new Set(['edit-set', 'delete-set', 'delete-entry', 'delete-session', 'back-home', 'open-session', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'export-json', 'import-json', 'run-import']);
+    const SETTLE_BEFORE = new Set(['edit-set', 'delete-set', 'delete-entry', 'delete-session', 'back-home', 'open-session', 'open-progress', 'open-plates', 'open-exercise-chart', 'open-muscle-chart', 'export-json', 'import-json', 'run-import']);
 
     async function handle(action, el) {
       if (SETTLE_BEFORE.has(action)) await settlePendingSets();
@@ -2615,6 +2741,28 @@
           pendingNav = 'push';
           await openProgress();
           break;
+        case 'open-plates':
+          pendingNav = 'push';
+          openPlateCalc();
+          break;
+        case 'plate-bar': {
+          const b = BAR_OPTIONS.find((x) => x.id === el.dataset.bar);
+          if (!b || (plateCalc && plateCalc.bar.id === b.id)) break;
+          if (plateCalc) {
+            // A kg bar target and an lb bar target are different numbers:
+            // carry the value across the switch like the unit toggle does.
+            const old = plateCalc.bar;
+            const n = Number(plateCalc.target);
+            if (old.unit && b.unit && old.unit !== b.unit && plateCalc.target !== '' && Number.isFinite(n)) {
+              plateCalc.target = b.unit === 'lbs'
+                ? String(Math.round(n * LBS_PER_KG * 10) / 10)
+                : String(Math.round(n / LBS_PER_KG * 100) / 100);
+            }
+            plateCalc.bar = b;
+          }
+          render();
+          break;
+        }
         case 'open-exercise-chart': {
           // Remember where we came from so Back returns there.
           const from = view === 'session' && session ? 'session:' + session.id
@@ -2913,6 +3061,24 @@
             }
             openForm.draft = d;
           }
+          // Same re-expression for the plate calculator: an lb bar's target
+          // is in lb (convert to display-unit kg), a custom bar's fields are
+          // display-unit values (convert to the other display unit).
+          if (view === 'plates' && plateCalc) {
+            if (plateCalc.bar.id === 'lb45') {
+              const n = Number(plateCalc.target);
+              if (plateCalc.target !== '' && Number.isFinite(n)) plateCalc.target = String(Math.round((n / LBS_PER_KG) * 100) / 100);
+            } else if (plateCalc.bar.id === 'custom') {
+              for (const key of ['target', 'customBar']) {
+                const n = Number(plateCalc[key]);
+                if (plateCalc[key] !== '' && Number.isFinite(n)) {
+                  plateCalc[key] = weightUnit === 'lbs'
+                    ? String(Math.round(n / LBS_PER_KG * 100) / 100)
+                    : String(Math.round(n * LBS_PER_KG * 10) / 10);
+                }
+              }
+            }
+          }
           weightUnit = u;
           render();
           api('PATCH', '/api/settings', { weight_unit: u }).catch((err) => toast(err.message));
@@ -3039,6 +3205,19 @@
       const deepExercise = parseInt(params.get('exercise') || '', 10);
       if (deepExercise) {
         try { await openExerciseChart(deepExercise, 'progress'); return; } catch (_) {}
+      }
+      // ?plates=1 deep-links into the plate calculator, like ?progress=1.
+      // &w=<target> pre-fills the target so proposal checks can assert a
+      // computed breakdown, and &bar=<id> pre-selects the bar.
+      if (params.get('plates') === '1') {
+        openPlateCalc();
+        const barParam = params.get('bar');
+        const barOpt = barParam && BAR_OPTIONS.find((b) => b.id === barParam);
+        if (barOpt) plateCalc.bar = barOpt;
+        const w = params.get('w');
+        if (w && Number.isFinite(Number(w))) plateCalc.target = w;
+        render();
+        return;
       }
       const deepMuscle = params.get('muscle');
       if (deepMuscle) {
