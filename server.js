@@ -336,6 +336,9 @@ app.get('/api/sessions', wrap(async (req, res) => {
     `SELECT s.id, s.started_at, s.note,
             COUNT(DISTINCT se.id)::int AS exercise_count,
             COUNT(st.id)::int AS set_count,
+            CASE WHEN MAX(st.created_at) IS NULL THEN NULL
+                 ELSE GREATEST(0, EXTRACT(EPOCH FROM (MAX(st.created_at) - s.started_at))::int) END
+              AS duration_seconds,
             (SELECT string_agg(e2.name, ', ' ORDER BY se2.created_at, se2.id)
              FROM session_exercises se2
              JOIN exercises e2 ON e2.id = se2.exercise_id
@@ -404,6 +407,11 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
     id: s.id,
     started_at: s.started_at,
     note: s.note,
+    duration_seconds: entries.some((e) => (setsByEntry[e.id] || []).length)
+      ? Math.max(0, Math.round((Math.max(...entries.flatMap((e) => (setsByEntry[e.id] || [])
+          .map((st) => new Date(st.created_at).getTime())))
+        - new Date(s.started_at).getTime()) / 1000))
+      : null,
     entries: entries.map((e) => ({
       id: e.id,
       exercise_id: e.exercise_id,

@@ -69,6 +69,16 @@
       "expectText": "Add exercise"
     },
     {
+      "name": "Home row shows workout duration",
+      "path": "/?demo=1",
+      "expectText": "Duration"
+    },
+    {
+      "name": "Session header shows workout duration",
+      "path": "/?demo=1&session=900002",
+      "expectText": "Duration"
+    },
+    {
       "name": "Exercise X delete buttons render in session",
       "path": "/?demo=1&session=900002",
       "expectSelector": "[data-action=\"delete-entry\"]"
