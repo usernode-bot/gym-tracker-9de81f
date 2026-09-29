@@ -1447,7 +1447,7 @@
       // callback so it never joins the root slide.
       const dock = document.getElementById('rest-dock');
       if (dock) {
-        dock.classList.toggle('hidden', view !== 'session');
+        dock.classList.toggle('hidden', view !== 'session' || restDockBlocked());
         // Leaving the session can't strand an open panel or its backdrop.
         if (view !== 'session') restExpanded = false;
         renderRestDock();
@@ -2304,6 +2304,16 @@
         </div>`;
     }
 
+    // True when a surface covers or takes over the workout screen — the set
+    // form, a note input, or any sheet/confirmation. The dock steps aside so
+    // it can't block those controls; the timer keeps counting underneath.
+    function restDockBlocked() {
+      return !!(openForm || picker ||
+        (editingNote !== null && editingNote !== false) ||
+        editingSessionNote || importSheet || exportSheet ||
+        muscleEditor || bwEditor || exerciseView?.confirmDelete);
+    }
+
     // Owns the dock's inner markup. Called only on STATE changes (expand,
     // collapse, reset, cancel, target change, idle↔running) — never from
     // tick(), which would re-mount the dial mid-drag.
@@ -2313,6 +2323,10 @@
       const card = document.getElementById('rest-card');
       const backdrop = document.getElementById('rest-backdrop');
       if (!dock || !pill || !card || !backdrop) return;
+      // A blocking surface opening over an expanded card collapses it here so
+      // the card's backdrop can't eat taps meant for the form underneath; the
+      // dock itself is hidden by render()'s restDockBlocked() toggle.
+      if (restExpanded && restDockBlocked()) restExpanded = false;
       const open = restExpanded && view === 'session';
       pill.classList.toggle('hidden', open);
       card.classList.toggle('hidden', !open);

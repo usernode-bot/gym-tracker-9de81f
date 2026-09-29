@@ -297,6 +297,11 @@
       "name": "Latest-session deep link opens a workout",
       "path": "/?session=latest",
       "expectText": "Add exercise"
+    },
+    {
+      "name": "Rest dock hides while the set form is open",
+      "path": "/?demo=1&session=900002&addset=1&rest=1",
+      "expectSelector": "#rest-dock.hidden"
     }
   ],
   "admins": [
