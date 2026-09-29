@@ -14,9 +14,9 @@
       "expectText": "Start workout"
     },
     {
-      "name": "Theme switcher renders",
+      "name": "Header renders",
       "path": "/",
-      "expectSelector": "[data-action=\"set-theme\"]"
+      "expectSelector": "[data-action=\"set-unit\"]"
     },
     {
       "name": "Swipeable session rows render",
