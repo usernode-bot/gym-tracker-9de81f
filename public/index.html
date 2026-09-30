@@ -2164,6 +2164,34 @@
     function buzz(pattern) {
       try { if ('vibrate' in navigator) navigator.vibrate(pattern); } catch (_) {}
     }
+    // Short end-of-rest beep via the Web Audio API: a ~0.15 s sine tone with
+    // a quick attack/decay envelope so it starts and stops without a click.
+    // The context is created lazily and reused; a suspended one (autoplay
+    // policy) gets a resume attempt, and anything that fails — unsupported
+    // API, blocked audio, any throw — degrades silently to vibration + toast.
+    function playRestBeep() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!playRestBeep.ctx) playRestBeep.ctx = new Ctx();
+        const ctx = playRestBeep.ctx;
+        // resume() is async: a policy-blocked resume rejects outside the
+        // try/catch, so catch it here too.
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        const t = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.2, t + 0.01);
+        gain.gain.setValueAtTime(0.2, t + 0.14);
+        gain.gain.linearRampToValueAtTime(0, t + 0.15);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.15);
+      } catch (_) {}
+    }
     // tick() runs at 1 Hz and must stay a pure readout update — textContent
     // and the progress width only. Touching the dial's DOM here would yank
     // the knob out from under a finger mid-drag.
@@ -2200,6 +2228,7 @@
       if (r.over && stopwatchStart && !restNotified) {
         restNotified = true;
         buzz([40, 60, 40]);
+        playRestBeep();
         toast('Rest’s up — ' + fmtDur(restTargetSec), true);
       }
     }
