@@ -50,6 +50,23 @@ view. All workout data is strictly private per user.
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
   prompt still shows. Strictly `IS_STAGING`; no-op in production.
+- **The accent color is per-user and drives the whole UI through CSS
+  custom properties** — `user_settings.accent_color` (TEXT, a 6-digit hex,
+  NULL = the default violet `#7c3aed`), set from the home top bar's
+  Appearance sheet (`?appearance=1` deep-links it). The palette presets
+  live in `ACCENT_PRESETS` in `public/index.html`; the free-form picker is
+  a native `<input type="color">`. Tailwind cannot extract a class name
+  assembled at runtime, so the accent is a token family in
+  `tailwind.config`'s inline `accent` colors, backed by
+  `--accent-*-rgb` / `--accent-ramp-*` variables on `:root` and `.dark`;
+  `applyAccent()` derives every shade from the chosen hex (contrast-based
+  on-color, a 4.5:1 text floor, a 7:1 soft/hover step, four strength-ramp
+  steps) and also sets the kit's `--un-accent` / `--un-accent-contrast`.
+  The server value is the truth and syncs across devices; a
+  `gym-tracker-accent` localStorage copy (like `gym-tracker-theme`) only
+  paints the right color before `GET /api/settings` resolves. Semantic
+  colors are deliberately NOT accent-driven: red destructive, amber notes,
+  emerald frequency ramp, zinc neutrals. The favicon stays violet.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
