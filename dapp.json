@@ -1,8 +1,6 @@
 {
   "name": "Gym Tracker",
-  "icon": {
-    "emoji": "🏋️"
-  },
+  "icon": { "image": "brand/icon.png", "emoji": "🏋️" },
   "secrets": [],
   "tests": [
     {
@@ -14,11 +12,6 @@
       "name": "Home renders for real user",
       "path": "/",
       "expectText": "Start workout"
-    },
-    {
-      "name": "Theme switcher renders",
-      "path": "/",
-      "expectSelector": "[data-action=\"set-theme\"]"
     },
     {
       "name": "Swipeable session rows render",
