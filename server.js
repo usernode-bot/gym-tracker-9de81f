@@ -163,17 +163,28 @@ async function ensureStagingUserData(userId) {
           [userId, s.started_at, s.note]
         );
         const { rows: demoEntries } = await client.query(
-          'SELECT id, exercise_id, note, created_at FROM session_exercises WHERE session_id = $1 ORDER BY id',
+          'SELECT id, exercise_id, note, superset_partner, created_at FROM session_exercises WHERE session_id = $1 ORDER BY id',
           [s.id]
         );
+        // ORDER BY id keeps insertion order so both drop-chain grouping
+        // (row order) and the superset partner reference (a same-session
+        // entry id) survive the copy.
+        const entryMap = new Map();
         for (const en of demoEntries) {
           const { rows: [newEntry] } = await client.query(
-            `INSERT INTO session_exercises (session_id, exercise_id, note, created_at)
-             VALUES ($1, $2, $3, $4) RETURNING id`,
+            `INSERT INTO session_exercises (session_id, exercise_id, note, superset_partner, created_at)
+             VALUES ($1, $2, $3, NULL, $4) RETURNING id`,
             [newSession.id, exMap.get(en.exercise_id), en.note, en.created_at]
           );
-          // ORDER BY id keeps insertion order so drop-chain grouping
-          // (derived from row order) survives the copy.
+          entryMap.set(en.id, newEntry.id);
+          // The link lives on one row of the pair and points at its partner,
+          // always inserted earlier (entries copy in id order).
+          if (en.superset_partner != null && entryMap.has(en.superset_partner)) {
+            await client.query(
+              'UPDATE session_exercises SET superset_partner = $2 WHERE id = $1',
+              [newEntry.id, entryMap.get(en.superset_partner)]
+            );
+          }
           await client.query(
             `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds,
                                effort, side, is_drop, note, created_at)
@@ -307,6 +318,19 @@ async function findEntry(entryId, userId) {
   return rows[0];
 }
 
+// Same ownership-scoped entry lookup for the superset link/unlink
+// transaction, which runs on an explicit client rather than the pool.
+function findEntryWithClient(client, entryId, userId) {
+  return client.query(
+    `SELECT se.id, se.session_id, se.exercise_id, se.note, e.exercise_type
+     FROM session_exercises se
+     JOIN workout_sessions s ON s.id = se.session_id
+     JOIN exercises e ON e.id = se.exercise_id
+     WHERE se.id = $1 AND s.user_id = $2`,
+    [entryId, userId]
+  ).then((r) => r.rows[0]);
+}
+
 async function findSet(setId, userId) {
   const { rows } = await pool.query(
     `SELECT st.id, st.session_exercise_id, st.set_type, st.reps, st.weight,
@@ -364,7 +388,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   // Entries plus, per entry, the most recent EARLIER session's entry for the
   // same exercise ("last time") — only counting entries that have sets.
   const entries = (await pool.query(
-    `SELECT se.id, se.exercise_id, se.note, e.name, e.exercise_type,
+    `SELECT se.id, se.exercise_id, se.note, se.superset_partner, e.name, e.exercise_type,
             lt.entry_id AS lt_entry_id, lt.lt_started_at
      FROM session_exercises se
      JOIN exercises e ON e.id = se.exercise_id
@@ -410,6 +434,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
       name: e.name,
       exercise_type: e.exercise_type,
       note: e.note,
+      superset: e.superset_partner != null ? e.superset_partner : null,
       sets: setsByEntry[e.id] || [],
       last_time: e.lt_entry_id
         ? { started_at: e.lt_started_at, sets: setsByEntry[e.lt_entry_id] || [] }
@@ -675,6 +700,49 @@ app.delete('/api/session-exercises/:id', wrap(async (req, res) => {
   const entry = await findEntry(id, req.user.id);
   if (!entry) return res.status(404).json({ error: 'Entry not found' });
   await pool.query('DELETE FROM session_exercises WHERE id = $1', [id]);
+  res.json({ ok: true });
+}));
+
+// Superset linker: two entries in the SAME session share one pair. Only one
+// row of the pair carries the link (A.superset_partner = B), so re-linking
+// either partner always ends in exactly one link row — a two-step clear in a
+// transaction keeps a busy client from ever leaving both or neither set.
+app.post('/api/supersets', wrap(async (req, res) => {
+  const aId = idParam(req.body && req.body.a_id);
+  const bId = idParam(req.body && req.body.b_id);
+  if (!aId || !bId) return res.status(400).json({ error: 'Two exercise ids are required' });
+  if (aId === bId) return res.status(400).json({ error: 'Pick two different exercises' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const a = await findEntryWithClient(client, aId, req.user.id);
+    const b = await findEntryWithClient(client, bId, req.user.id);
+    if (!a || !b) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Exercise not found' }); }
+    if (a.session_id !== b.session_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Both exercises must be in the same workout' });
+    }
+    await client.query('UPDATE session_exercises SET superset_partner = NULL WHERE id IN ($1, $2) OR superset_partner IN ($1, $2)', [aId, bId]);
+    await client.query('UPDATE session_exercises SET superset_partner = $2 WHERE id = $1', [aId, bId]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json({ a_id: aId, b_id: bId });
+}));
+
+app.delete('/api/supersets/:entryId', wrap(async (req, res) => {
+  const id = idParam(req.params.entryId);
+  if (!id) return res.status(404).json({ error: 'Entry not found' });
+  const entry = await findEntry(id, req.user.id);
+  if (!entry) return res.status(404).json({ error: 'Entry not found' });
+  await pool.query(
+    'UPDATE session_exercises SET superset_partner = NULL WHERE id = $1 OR superset_partner = $1',
+    [id]
+  );
   res.json({ ok: true });
 }));
 
@@ -1101,6 +1169,26 @@ async function migrate() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS session_exercises_exercise_idx ON session_exercises (exercise_id)
   `);
+  // Superset linker: a self-FK partner on the session entry. Only one of
+  // the two partners stores the id, so the pair is a single link row and
+  // can never form chains. SET NULL (not CASCADE) so deleting one exercise
+  // of a pair just unlinks it rather than deleting its partner.
+  await pool.query(`ALTER TABLE session_exercises ADD COLUMN IF NOT EXISTS superset_partner INTEGER REFERENCES session_exercises(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE session_exercises DROP CONSTRAINT IF EXISTS superset_partner_fkey`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'superset_partner_fkey'
+          AND conrelid = 'session_exercises'::regclass
+      ) THEN
+        ALTER TABLE session_exercises
+          ADD CONSTRAINT superset_partner_fkey
+          FOREIGN KEY (superset_partner) REFERENCES session_exercises(id) ON DELETE SET NULL;
+      END IF;
+    END
+  $$ LANGUAGE plpgsql`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sets (
       id SERIAL PRIMARY KEY,
@@ -1273,6 +1361,12 @@ async function seedStagingDemo() {
       (900029, 900002, 900005, 'Staging demo long note — a deliberately long exercise note that exists to check details wrap into a readable paragraph instead of being cut off after one line: keep the elbows tucked, pause for a second at the chest, and stop two reps short of failure on every working set', NOW() - INTERVAL '2 hours' + INTERVAL '30 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
+  // Superset demo pair in the newest session: bench press and plank run as a
+  // superset. The link lives on the bench entry and points at the plank
+  // entry; the copy-to-tester path mirrors it under fresh ids.
+  await pool.query(
+    'UPDATE session_exercises SET superset_partner = 900004 WHERE id = 900003 AND superset_partner IS NULL'
+  );
   await pool.query(`
     INSERT INTO sets (id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at) VALUES
       (900001, 900001, 'reps', 8, 60,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '3 days'),
