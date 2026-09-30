@@ -99,6 +99,19 @@
       "expectText": "Staging demo plank"
     },
     {
+      "name": "Picker rows show mini muscle diagrams",
+      "path": "/?demo=1&session=900002&picker=1",
+      "expectSelector": "[data-picker-fig] g.fill-violet-600"
+    },
+    {
+      "id": "picker.mini-muscle-diagram",
+      "name": "Picker mini muscle diagrams render",
+      "path": "/?demo=1&session=900002&picker=1",
+      "expectSelector": "[data-picker-fig] g.fill-violet-600",
+      "visual": true,
+      "impact": ["public/index.html"]
+    },
+    {
       "name": "Picker shows exercise type badges",
       "path": "/?demo=1&session=900002&picker=1",
       "expectSelector": "[data-ex-type=\"time\"]"

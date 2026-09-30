@@ -789,12 +789,12 @@
           suggested.map(({ e, via }) => {
             const sub = via ? `aka ${esc(via)}` : esc((e.muscles || []).join(' · '));
             return `<button data-action="pick-suggested" data-name="${esc(e.name)}" data-type="${e.type}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">
-              <span class="min-w-0"><span class="block truncate">${esc(e.name)}</span>${sub ? `<span class="block truncate text-[11px] text-zinc-500 dark:text-zinc-500">${sub}</span>` : ''}</span>
+              ${pickerMiniFigureHtml(e.muscles)}<span class="min-w-0"><span class="block truncate">${esc(e.name)}</span>${sub ? `<span class="block truncate text-[11px] text-zinc-500 dark:text-zinc-500">${sub}</span>` : ''}</span>
               ${typeBadgeHtml(e.type)}</button>`;
           }).join('') +
           (items.length ? `<div class="px-3 pt-2 pb-0.5 text-[10px] uppercase tracking-widest text-zinc-500 dark:text-zinc-600">Your exercises</div>` : '')
         : '';
-      html += items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"><span class="truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
+      html += items.map((x) => `<button data-action="pick-exercise" data-id="${x.id}" class="w-full flex items-center justify-between gap-2 text-left px-3 py-2.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">${pickerMiniFigureHtml(x.muscles)}<span class="min-w-0 block truncate">${esc(x.name)}</span>${typeBadgeHtml(x.exercise_type)}</button>`).join('');
       if (q && !exact) {
         // Creating is a two-step choice: the type is picked once, here, and
         // can never be changed afterward — so there's no pre-selected default.
@@ -836,7 +836,16 @@
     // handler (closest()/dataset work on SVG elements). Rated muscles tint by
     // the active mode (strength level or training frequency); the rest keep
     // neutral zinc.
-    function bodyRegion(slug, shapes) {
+    // Passing a highlight set switches to the non-interactive mini variant
+    // used by the exercise picker: highlighted slugs tint violet, the rest
+    // keep neutral zinc, and there is no click action, hover or tooltip.
+    function bodyRegion(slug, shapes, highlightSet) {
+      if (highlightSet) {
+        const cls = highlightSet.has(slug)
+          ? 'fill-violet-600 dark:fill-violet-500'
+          : 'fill-zinc-400 dark:fill-zinc-600';
+        return `<g class="${cls}">${shapes}</g>`;
+      }
       const t = hubTint(slug);
       const cls = t
         ? `cursor-pointer ${t.fill} hover:opacity-70 transition-opacity`
@@ -847,7 +856,8 @@
 
     // Schematic front/back figure — neutral filler (head, hands, joints)
     // underneath, tappable muscle regions on top.
-    function figureSvg(side) {
+    function figureSvg(side, highlight) {
+      const br = (slug, shapes) => bodyRegion(slug, shapes, highlight || null);
       const filler = `<g class="fill-zinc-200 dark:fill-zinc-800" pointer-events="none">
         <circle cx="100" cy="26" r="15"/>
         <rect x="92" y="38" width="16" height="16" rx="5"/>
@@ -861,21 +871,35 @@
         <rect x="68" y="294" width="28" height="11" rx="5"/><rect x="104" y="294" width="28" height="11" rx="5"/>
       </g>`;
       const both =
-        bodyRegion('shoulders', '<ellipse cx="62" cy="63" rx="15" ry="10"/><ellipse cx="138" cy="63" rx="15" ry="10"/>') +
-        bodyRegion('forearms', '<rect x="47" y="124" width="15" height="38" rx="7"/><rect x="138" y="124" width="15" height="38" rx="7"/>') +
-        bodyRegion('calves', '<rect x="78" y="240" width="17" height="50" rx="8"/><rect x="105" y="240" width="17" height="50" rx="8"/>');
+        br('shoulders', '<ellipse cx="62" cy="63" rx="15" ry="10"/><ellipse cx="138" cy="63" rx="15" ry="10"/>') +
+        br('forearms', '<rect x="47" y="124" width="15" height="38" rx="7"/><rect x="138" y="124" width="15" height="38" rx="7"/>') +
+        br('calves', '<rect x="78" y="240" width="17" height="50" rx="8"/><rect x="105" y="240" width="17" height="50" rx="8"/>');
       const front =
-        bodyRegion('chest', '<rect x="74" y="57" width="52" height="34" rx="10"/>') +
-        bodyRegion('core', '<rect x="78" y="95" width="44" height="54" rx="8"/>') +
-        bodyRegion('biceps', '<rect x="46" y="78" width="17" height="42" rx="8"/><rect x="137" y="78" width="17" height="42" rx="8"/>') +
-        bodyRegion('quads', '<rect x="76" y="166" width="19" height="66" rx="8"/><rect x="105" y="166" width="19" height="66" rx="8"/>');
+        br('chest', '<rect x="74" y="57" width="52" height="34" rx="10"/>') +
+        br('core', '<rect x="78" y="95" width="44" height="54" rx="8"/>') +
+        br('biceps', '<rect x="46" y="78" width="17" height="42" rx="8"/><rect x="137" y="78" width="17" height="42" rx="8"/>') +
+        br('quads', '<rect x="76" y="166" width="19" height="66" rx="8"/><rect x="105" y="166" width="19" height="66" rx="8"/>');
       const back =
-        bodyRegion('back', '<rect x="74" y="57" width="52" height="62" rx="10"/>') +
-        bodyRegion('glutes', '<rect x="75" y="123" width="50" height="42" rx="12"/>') +
-        bodyRegion('triceps', '<rect x="46" y="78" width="17" height="42" rx="8"/><rect x="137" y="78" width="17" height="42" rx="8"/>') +
-        bodyRegion('hamstrings', '<rect x="76" y="166" width="19" height="66" rx="8"/><rect x="105" y="166" width="19" height="66" rx="8"/>');
-      const label = `<text x="100" y="312" text-anchor="middle" font-size="11" class="fill-zinc-400 dark:fill-zinc-600">${side === 'front' ? 'Front' : 'Back'}</text>`;
+        br('back', '<rect x="74" y="57" width="52" height="62" rx="10"/>') +
+        br('glutes', '<rect x="75" y="123" width="50" height="42" rx="12"/>') +
+        br('triceps', '<rect x="46" y="78" width="17" height="42" rx="8"/><rect x="137" y="78" width="17" height="42" rx="8"/>') +
+        br('hamstrings', '<rect x="76" y="166" width="19" height="66" rx="8"/><rect x="105" y="166" width="19" height="66" rx="8"/>');
+      const label = highlight ? '' : `<text x="100" y="312" text-anchor="middle" font-size="11" class="fill-zinc-400 dark:fill-zinc-600">${side === 'front' ? 'Front' : 'Back'}</text>`;
       return filler + both + (side === 'front' ? front : back) + label;
+    }
+
+    // Tiny decorative front/back figure for an exercise-picker row: the
+    // Progress diagram's shapes scaled down, with the exercise's muscles
+    // tinted violet. Non-interactive (the row button is the only tap target)
+    // and omitted entirely for exercises without muscle tags.
+    function pickerMiniFigureHtml(muscles) {
+      const tags = (muscles || []).filter((m) => MUSCLE_LABELS[m]);
+      if (!tags.length) return '';
+      const hl = new Set(tags);
+      return `<span data-picker-fig aria-hidden="true" class="flex shrink-0 w-9 gap-0.5">
+        <svg viewBox="0 0 200 316" class="w-1/2">${figureSvg('front', hl)}</svg>
+        <svg viewBox="0 0 200 316" class="w-1/2">${figureSvg('back', hl)}</svg>
+      </span>`;
     }
 
     function bodyDiagramHtml() {
