@@ -129,7 +129,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
