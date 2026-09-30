@@ -155,6 +155,20 @@ view. All workout data is strictly private per user.
   `isStaging`, which comes from the `staging` flag now returned by
   `GET /api/settings` — it writes a set, so it must never run against
   a production account. No feature is gated on that flag.
+- **Session duration (issue #44) is derived, never stored**: no
+  `ended_at` column, no close action. A session's duration is
+  `started_at → MAX(sets.created_at)` with sets inside a **12-hour
+  window** of `started_at` (same window applied server-side in both
+  `GET /api/sessions` and `GET /api/sessions/:id`, and client-side in
+  `inWindow`). Set `created_at` is the log time — edits never touch it,
+  deletes shrink the duration, and a set logged days later cannot
+  inflate an old workout. Display is minutes-precision ("42 min",
+  "1 h 12 min") via `fmtSessionDur`, deliberately distinct from the
+  m:ss `fmtDur` used for time-type sets. The session view shows a live
+  elapsed line (30s text-only ticker, rest-timer discipline) while the
+  session is inside its window, and the frozen derived total otherwise;
+  empty workouts show nothing. `exportSet` already emitted per-set
+  `created_at`, so durations survive export→import.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,
