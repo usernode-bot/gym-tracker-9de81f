@@ -1413,13 +1413,9 @@
       // The dock lives outside #app, so it's shown/hidden here rather than
       // being re-emitted by the view's HTML. Toggled outside the transition
       // callback so it never joins the root slide.
-      const dock = document.getElementById('rest-dock');
-      if (dock) {
-        dock.classList.toggle('hidden', view !== 'session');
-        // Leaving the session can't strand an open panel or its backdrop.
-        if (view !== 'session') restExpanded = false;
-        renderRestDock();
-      }
+      // renderRestDock() decides visibility too (restDockShown), so a
+      // re-render that opens or closes a form/sheet hides or restores it.
+      renderRestDock();
       const apply = () => {
         const html = view === 'home' ? homeHtml()
           : view === 'session' ? sessionHtml()
@@ -1464,6 +1460,7 @@
             if (kitSheets[kind] && kitSheets[kind].el === el) {
               delete kitSheets[kind];
               onClosed();
+              renderRestDock(); // a drag-dismiss doesn't re-render; bring the rest dock back
             }
           },
         });
@@ -1574,6 +1571,7 @@
           const entryId = +ni.dataset.entry;
           const val = ni.value;
           editingNote = null;
+          renderRestDock(); // the note is closed now — don't wait on the save to bring the dock back
           if (cancelled) { render(); return; }
           try { await api('PATCH', '/api/session-exercises/' + entryId, { note: val }); }
           catch (err) { toast(err.message); }
@@ -1595,6 +1593,7 @@
           const cancelled = sni.dataset.cancel === '1';
           const val = sni.value;
           editingSessionNote = false;
+          renderRestDock();
           if (cancelled) { render(); return; }
           try { await api('PATCH', '/api/sessions/' + session.id, { note: val }); }
           catch (err) { toast(err.message); }
@@ -2304,16 +2303,37 @@
     // Owns the dock's inner markup. Called only on STATE changes (expand,
     // collapse, reset, cancel, target change, idle↔running) — never from
     // tick(), which would re-mount the dial mid-drag.
+    // Anything that takes input and can sit under the floating dock (issue
+    // #49): the inline set form (reps / time fields), the note inputs and
+    // every bottom sheet. One list, read on every render, so a new surface
+    // only has to be added here. The sheets that live on other views are
+    // listed too — harmless there, and they keep the rule view-independent.
+    function restDockBlocked() {
+      return !!(openForm || picker || importSheet || exportSheet || bwEditor || muscleEditor
+        || editingNote !== null || editingSessionNote);
+    }
+    // The dock shows only in a session with nothing blocking it. Hidden is
+    // display:none, so it can't take a tap; the timer itself is untouched —
+    // tick() keeps updating the (invisible) readout and still fires the
+    // rest's-up cue, and the dock comes back at the right time.
+    function restDockShown() {
+      return view === 'session' && !restDockBlocked();
+    }
     function renderRestDock() {
       const dock = document.getElementById('rest-dock');
       const pill = document.getElementById('rest-pill');
       const card = document.getElementById('rest-card');
       const backdrop = document.getElementById('rest-backdrop');
       if (!dock || !pill || !card || !backdrop) return;
-      const open = restExpanded && view === 'session';
+      const shown = restDockShown();
+      dock.classList.toggle('hidden', !shown);
+      // Leaving the session or opening a form can't strand an open panel or
+      // its backdrop — the card comes back collapsed, as a pill.
+      if (!shown) restExpanded = false;
+      const open = restExpanded;
       pill.classList.toggle('hidden', open);
       card.classList.toggle('hidden', !open);
-      backdrop.classList.toggle('hidden', !open || dock.classList.contains('hidden'));
+      backdrop.classList.toggle('hidden', !open);
       // The backdrop needs to sit above app content while open; collapsed,
       // the pill drops back under it (undo pill z-40, error toast z-50).
       dock.classList.toggle('z-40', open);

@@ -129,6 +129,12 @@ view. All workout data is strictly private per user.
   transitions; `html.un-kb` fades it out while the keyboard is up, so
   it can't cover the field being typed into (issue #36), and a focused
   input collapses the card so its backdrop can't eat taps invisibly.
+  The dock is also hidden outright (issue #49) whenever a surface that
+  takes input is open — the set form, a note input, or any sheet —
+  per the single `restDockBlocked()` list that `renderRestDock()`
+  reads on every render; add a new form/sheet's state there. Hiding
+  never touches the timer: it keeps counting, still fires the end cue,
+  and the pill returns (collapsed) when the surface closes.
   Notes (session, entry, set) wrap as paragraphs —
   `whitespace-pre-wrap break-words`, never `truncate`.
 - **Logging a set is optimistic** (issue #43): `onSetSubmit` never
