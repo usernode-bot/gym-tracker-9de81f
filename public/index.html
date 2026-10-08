@@ -488,12 +488,15 @@
               <div class="flex items-center gap-2 shrink-0">${right || ''}</div>
             </div>
           </div>
-          ${large ? `<h1 id="un-large-title" class="un-navbar-large" style="padding-left:0;padding-right:0">${title}</h1>` : ''}
+          ${large && title ? `<h1 id="un-large-title" class="un-navbar-large" style="padding-left:0;padding-right:0">${title}</h1>` : ''}
           ${subtitle ? `<div class="text-xs text-zinc-500 ${large ? '-mt-1' : 'pt-2'} mb-3">${subtitle}</div>` : `<div class="${large ? '' : 'pt-2'} mb-2"></div>`}`;
       }
       if (!backAction) {
-        return `<header class="flex items-center justify-between gap-2 py-5">
-          <h1 class="text-2xl font-bold">${title}</h1>
+        // An empty title keeps the bar (for the right slot) but shows no
+        // heading — the shell already names the app above the frame.
+        const showTitle = title && title.trim();
+        return `<header class="flex items-center ${showTitle ? 'justify-between' : 'justify-end'} gap-2 py-5">
+          ${showTitle ? `<h1 class="text-2xl font-bold">${title}</h1>` : ''}
           <div class="flex items-center gap-2">${right || ''}</div>
         </header>`;
       }
@@ -531,7 +534,7 @@
         ? `<div class="un-group">${rows}</div>`
         : `<div class="space-y-2">${rows}</div>`;
       return `
-        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() })}
+        ${headerHtml({ title: '', backAction: null, right: unitSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
         ${list}
