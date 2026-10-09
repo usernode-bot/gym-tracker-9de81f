@@ -104,6 +104,11 @@
       "expectSelector": "[data-action=\"open-progress\"]"
     },
     {
+      "name": "Weekly volume chart on home",
+      "path": "/?demo=1",
+      "expectSelector": "[data-week-volume]"
+    },
+    {
       "name": "Progress hub shows body diagram",
       "path": "/?demo=1&progress=1",
       "expectSelector": "[data-body-diagram]"
