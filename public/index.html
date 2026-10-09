@@ -927,6 +927,11 @@
       if (!box || !progressHub) return;
       const ql = progressHub.query.trim().toLowerCase();
       const items = progressHub.list.filter((x) => !ql || x.name.toLowerCase().includes(ql));
+      // Filtering out every row is not the same as having none: distinguish
+      // the search miss from the true empty list so the copy stays honest.
+      const emptyMsg = ql
+        ? 'No exercises match your search'
+        : 'No exercises yet';
       box.innerHTML = items.length ? items.map((x) => {
         const tags = (x.muscles && x.muscles.length)
           ? x.muscles.map((m) => `<span class="px-1.5 py-0.5 rounded-full bg-zinc-200/70 dark:bg-zinc-800 text-[10px] text-zinc-600 dark:text-zinc-400">${MUSCLE_LABELS[m] || esc(m)}</span>`).join('')
@@ -935,7 +940,7 @@
           <div class="text-sm font-medium">${esc(x.name)}</div>
           <div class="flex flex-wrap gap-1 mt-1">${tags}</div>
         </button>`;
-      }).join('') : '<div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">No exercises yet</div>';
+      }).join('') : `<div data-progress-search class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-6">${emptyMsg}</div>`;
     }
 
     // ---------- chart metrics ----------
@@ -3025,6 +3030,16 @@
           // since the hub opens them on Frequency).
           if (params.get('freq') === '1' && progressHub) { progressHub.mode = 'freq'; renderBodyDiagram(); }
           else if (params.get('strength') === '1' && progressHub) { progressHub.mode = 'strength'; renderBodyDiagram(); }
+          // &progressq=<text> pre-fills the exercise list's search — lets the
+          // proposal checks exercise the filter and its empty state without
+          // typing.
+          const prq = params.get('progressq');
+          if (prq && progressHub) {
+            progressHub.query = prq;
+            const si = document.getElementById('progress-search');
+            if (si) si.value = prq;
+            renderProgressList();
+          }
           return;
         } catch (_) {}
       }
