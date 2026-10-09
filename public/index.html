@@ -272,6 +272,11 @@
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
     let pendingNav = null;       // 'push' | 'pop' — consumed by the next render() as a kit screen transition
     let isStaging = false;       // deploy environment, from GET /api/settings (only gates the ?logset=1 test hook)
+    const WORKOUT_TEMPLATES = [
+      { id: 'push', name: 'Push day' },
+      { id: 'pull', name: 'Pull day' },
+      { id: 'legs', name: 'Leg day' },
+    ];
     // Optimistic set saves: a logged set lands in the local session payload
     // and renders immediately, with the POST/PATCH settling in the
     // background. Temp ids are negative so they can never collide with a
@@ -534,6 +539,12 @@
         ${headerHtml({ title: '', backAction: null, right: unitSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
+        <div class="mb-5" data-templates>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1.5">Start from a template</div>
+          <div class="flex gap-2">
+            ${WORKOUT_TEMPLATES.map((t) => `<button data-action="start-template" data-template="${t.id}" class="flex-1 py-2.5 px-1 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-violet-500 font-medium text-sm">${t.name}</button>`).join('')}
+          </div>
+        </div>
         ${list}
         <div class="grid grid-cols-2 gap-2 mt-6">
           <button data-action="export-json" class="un-touch-target w-full py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-sm font-medium">Export JSON</button>
@@ -2576,6 +2587,7 @@
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
     const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
+    const FLUSH_BEFORE_TPL = new Set([...FLUSH_BEFORE, 'start-template']);
 
     // Actions that address a set by id (or take the session view away) wait
     // for any optimistic save to settle first, so they can never send a temp
@@ -2584,10 +2596,21 @@
 
     async function handle(action, el) {
       if (SETTLE_BEFORE.has(action)) await settlePendingSets();
-      if (FLUSH_BEFORE.has(action)) await flushPendingDelete();
+      if (FLUSH_BEFORE_TPL.has(action)) await flushPendingDelete();
       switch (action) {
         case 'start-workout': {
           const s = await api('POST', '/api/sessions');
+          pendingNav = 'push';
+          await openSession(s.id);
+          break;
+        }
+        case 'start-template': {
+          // One POST prefills the session's exercise list from the template
+          // server-side (create-or-get + add, in template order). The result
+          // is an ordinary session, so every existing edit affordance
+          // (picker, swipe delete, notes, reordering-by-re-add) keeps
+          // working on it unchanged.
+          const s = await api('POST', '/api/sessions', { template: el.dataset.template });
           pendingNav = 'push';
           await openSession(s.id);
           break;
@@ -3037,6 +3060,17 @@
         try { await openMuscleChart(deepMuscle); return; } catch (_) {}
       }
       await loadHome();
+      // ?newtemplate=<id> starts a real session from that template — lets
+      // the proposal checks cover the prefill end to end, which no
+      // navigate-only check could otherwise reach. It writes a session, so
+      // like logset it is preview-only (isStaging comes from
+      // GET /api/settings). The flow it drives is the same code both the
+      // button tap and a production user run.
+      const tplParam = params.get('newtemplate');
+      if (tplParam && isStaging && WORKOUT_TEMPLATES.some((t) => t.id === tplParam)) {
+        await handle('start-template', { dataset: { template: tplParam } });
+        return;
+      }
       // ?export=1 deep-links straight to the export sheet — like ?import=1,
       // it lets the proposal checks exercise the sheet without clicks.
       if (params.get('export') === '1') await openExportSheet();
