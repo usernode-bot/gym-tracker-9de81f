@@ -336,6 +336,7 @@ app.get('/api/sessions', wrap(async (req, res) => {
     `SELECT s.id, s.started_at, s.note,
             COUNT(DISTINCT se.id)::int AS exercise_count,
             COUNT(st.id)::int AS set_count,
+            EXTRACT(EPOCH FROM (MAX(st.created_at) - s.started_at))::int AS duration_seconds,
             (SELECT string_agg(e2.name, ', ' ORDER BY se2.created_at, se2.id)
              FROM session_exercises se2
              JOIN exercises e2 ON e2.id = se2.exercise_id
@@ -365,7 +366,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   // same exercise ("last time") — only counting entries that have sets.
   const entries = (await pool.query(
     `SELECT se.id, se.exercise_id, se.note, e.name, e.exercise_type,
-            lt.entry_id AS lt_entry_id, lt.lt_started_at
+            se.created_at, lt.entry_id AS lt_entry_id, lt.lt_started_at
      FROM session_exercises se
      JOIN exercises e ON e.id = se.exercise_id
      LEFT JOIN LATERAL (
@@ -410,6 +411,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
       name: e.name,
       exercise_type: e.exercise_type,
       note: e.note,
+      created_at: e.created_at,
       sets: setsByEntry[e.id] || [],
       last_time: e.lt_entry_id
         ? { started_at: e.lt_started_at, sets: setsByEntry[e.lt_entry_id] || [] }
