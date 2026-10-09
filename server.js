@@ -95,6 +95,15 @@ app.get('/favicon.ico', (_req, res) => {
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((err) => res.status(500).json({ error: err.message }));
 
+// Validate and normalize a bodyweight payload: a finite number between 20
+// and 400 kg, rounded to 2 decimals (NUMERIC(5,2)) — or null to clear.
+// Weights are always STORED in kg; the client converts lbs before sending.
+function parseBodyweightKg(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 20 || n > 400) return null;
+  return Math.round(n * 100) / 100;
+}
+
 // GET routes may read the staging demo user's rows via ?demo=1 (staging
 // only, strictly read-only — every write route uses req.user.id directly).
 function readUserId(req) {
@@ -184,6 +193,17 @@ async function ensureStagingUserData(userId) {
         }
       }
     }
+    // Bodyweight trend rows are part of the demo dataset, so a first-time
+    // tester's Home card shows the same 30-day trend the ?demo=1 overlay
+    // would. Copied with fresh ids under the tester's own user id.
+    await client.query(
+      `INSERT INTO bodyweight_log (user_id, log_date, weight_kg)
+       SELECT $1, log_date, weight_kg
+       FROM bodyweight_log
+       WHERE user_id = $2
+       ON CONFLICT (user_id, log_date) DO NOTHING`,
+      [userId, DEMO_USER_ID]
+    );
     await client.query('COMMIT');
     stagingCopiedUsers.add(userId);
   } catch (err) {
@@ -1015,6 +1035,45 @@ app.patch('/api/settings', wrap(async (req, res) => {
   });
 }));
 
+// ---------- Bodyweight log ----------
+
+// Daily bodyweight trend, separate from the strength-level setting. One row
+// per user per day: logging today again UPDATES the row (upsert), so the
+// last entry always wins. The Home card shows the latest weight plus a
+// sparkline of the last 30 days of entries.
+app.get('/api/bodyweight', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const { rows } = await pool.query(
+    `SELECT log_date::text AS log_date, weight_kg
+     FROM bodyweight_log
+     WHERE user_id = $1
+     ORDER BY log_date DESC
+     LIMIT 30`,
+    [uid]
+  );
+  res.json({
+    entries: rows.map((r) => ({ log_date: r.log_date, weight_kg: parseFloat(r.weight_kg) })),
+  });
+}));
+
+app.post('/api/bodyweight', wrap(async (req, res) => {
+  const bw = parseBodyweightKg((req.body || {}).weight_kg);
+  if (bw === null) {
+    return res.status(400).json({ error: 'weight_kg must be a number between 20 and 400 kg' });
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  // Upsert: re-logging today's weight updates the existing row for the
+  // day instead of creating a second entry.
+  await pool.query(
+    `INSERT INTO bodyweight_log (user_id, log_date, weight_kg)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, log_date)
+     DO UPDATE SET weight_kg = EXCLUDED.weight_kg`,
+    [req.user.id, day, bw]
+  );
+  res.json({ log_date: day, weight_kg: bw });
+}));
+
 // The static handler must never serve a file that renderTemplate owns, or it
 // hands out the unrendered template — placeholder text where the platform
 // origin should be, which is a broken page with broken asset tags. Two ways it
@@ -1137,6 +1196,26 @@ async function migrate() {
   await pool.query(`COMMENT ON TABLE workout_sessions IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE session_exercises IS 'staging:private'`);
   await pool.query(`COMMENT ON TABLE sets IS 'staging:private'`);
+
+  // Daily bodyweight log (weight is personal health data — private, like
+  // the rest of the per-user workout chain). One row per user per day.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bodyweight_log (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      log_date DATE NOT NULL,
+      weight_kg NUMERIC(5,2) NOT NULL CHECK (weight_kg > 0),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS bodyweight_log_user_day_idx
+    ON bodyweight_log (user_id, log_date)
+  `);
+  // Weight is personal health data beyond a public username, so the log is
+  // private: staging copies the schema but never the rows, and the boot
+  // seed below fills it with obviously fake demo entries instead.
+  await pool.query(`COMMENT ON TABLE bodyweight_log IS 'staging:private'`);
 
   // One-time muscle-tag backfill for pre-feature rows: only rows still NULL
   // (never suggested) are touched, so a user who deliberately cleared their
@@ -1378,6 +1457,25 @@ async function seedStagingDemo() {
   await pool.query(
     `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
   );
+  // Demo daily bodyweight trend for the Home card (last 30 days). Weight is
+  // personal health data, so the real table is staging:private — staging
+  // starts EMPTY and needs its own seed. Rows belong to fake demo user
+  // 900001 (never the visitor). Idempotent via the unique (user_id, log_date)
+  // conflict target — a long-lived staging DB's existing rows are skipped, so
+  // re-seeding never double-writes. A gentle downward drift gives the Home
+  // sparkline a visible trend; nothing reads this signal for logic that
+  // changes behaviour, so seeding it is purely visual.
+  const demoBodyweight = [];
+  for (let i = 29; i >= 0; i--) {
+    // 80.0 kg drifting down to 78.3 over the month.
+    const kg = Math.round((80 - (29 - i) * 0.06) * 10) / 10;
+    demoBodyweight.push(`(900001, CURRENT_DATE - ${i}, ${kg})`);
+  }
+  await pool.query(`
+    INSERT INTO bodyweight_log (user_id, log_date, weight_kg)
+    VALUES ${demoBodyweight.join(',\n      ')}
+    ON CONFLICT (user_id, log_date) DO NOTHING
+  `);
 }
 
 async function start() {

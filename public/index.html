@@ -263,6 +263,7 @@
     let bwEditor = null;      // truthy while the bodyweight sheet is open
     let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
     let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
+    let bodyweightSeries = []; // daily bodyweight log, newest first [{ log_date, weight_kg }]
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let restTargetSec = 120;   // rest target in seconds (30..600, multiple of 30) — set below from localStorage
     let restExpanded = false;  // the expanded rest control card is open
@@ -508,6 +509,60 @@
     }
 
 
+    // Compact bodyweight card for Home: latest weight, a 30-day sparkline
+    // and an inline input to log today's weight (in the user's display unit;
+    // stored in kg like every other weight). Hand-rolled <svg> polyline —
+    // the native kit ships no chart primitive. Empty state still offers the
+    // input, so the primary action is reachable either way.
+    function bodyweightCardHtml() {
+      // The ?demo=1 overlay reads the staging demo user's rows read-only;
+      // in that mode the input is hidden so a tester can't write into the
+      // demo overlay. Production-identical shape (latest, sparkline, input).
+      const readonlyOverlay = demo;
+      const series = bodyweightSeries.map((e) => kgToUnitNum(e.weight_kg));
+      const pts = [];
+      const W = 96, H = 28;
+      if (series.length >= 2) {
+        const min = Math.min(...series), max = Math.max(...series);
+        const span = max - min || 1;
+        series.forEach((v, i) => {
+          pts.push([
+            Math.round((i / (series.length - 1)) * W * 10) / 10,
+            Math.round((H - 3 - ((v - min) / span) * (H - 6)) * 10) / 10,
+          ]);
+        });
+      }
+      const spark = pts.length
+        ? `<svg viewBox="0 0 ${W} ${H}" class="w-24 h-7 shrink-0" aria-hidden="true">
+             <polyline points="${pts.map((p) => p.join(',')).join(' ')}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" class="text-violet-500 dark:text-violet-400"/>
+           </svg>`
+        : '';
+      return `<div id="bodyweight-card" class="rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3 mb-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="text-xs text-zinc-500 dark:text-zinc-500">Bodyweight</div>
+            ${bodyweightSeries.length
+              ? `<div class="text-xl font-semibold mt-0.5"><span id="bodyweight-latest">${esc(fmtW(bodyweightSeries[0].weight_kg))}</span> <span class="text-xs font-normal text-zinc-500 dark:text-zinc-500">${weightUnit}</span></div>
+                 <div class="text-[11px] text-zinc-500 dark:text-zinc-600 mt-0.5">${fmtDateShort(bodyweightSeries[0].log_date)}</div>`
+              : `<div class="text-xl font-semibold mt-0.5 text-zinc-400 dark:text-zinc-600">—</div>
+                 <div class="text-[11px] text-zinc-500 dark:text-zinc-600 mt-0.5">Log today's weight to start your trend</div>`}
+          </div>
+          ${spark}
+        </div>
+        ${readonlyOverlay ? `
+        <div class="mt-2.5 text-xs text-zinc-500 dark:text-zinc-500">Staging demo: entries are read-only here.</div>`
+        : `
+        <div class="flex gap-2 mt-2.5">
+          <div class="relative flex-1 min-w-0">
+            <input id="bw-today-input" type="number" min="0" step="any" inputmode="decimal" placeholder="today (${weightUnit})" class="${inp} w-full pr-9">
+            <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
+          </div>
+          <button data-action="log-bw" class="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium">Log</button>
+        </div>`}
+      </div>`;
+    }
+
+
     function homeHtml() {
       const visible = sessions.filter((s) => !isPendingDelete('session', s.id));
       // Kit: bare rows inside an inset-grouped .un-group card (the kit's
@@ -534,6 +589,7 @@
         ${headerHtml({ title: '', backAction: null, right: unitSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
+        ${bodyweightCardHtml()}
         ${list}
         <div class="grid grid-cols-2 gap-2 mt-6">
           <button data-action="export-json" class="un-touch-target w-full py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-sm font-medium">Export JSON</button>
@@ -1383,6 +1439,12 @@
     // Carry focus, caret, and in-progress text across the full innerHTML
     // swap, so a background re-render (e.g. the undo window committing while
     // the user is typing) doesn't slam the mobile keyboard shut.
+    // Typed text in the bodyweight card's input, so a background re-render
+    // (undo commit, visibility refresh) doesn't clear a half-typed weight.
+    function captureBodyweightInput() {
+      const el = document.getElementById('bw-today-input');
+      return el && el.value ? el.value : null;
+    }
     function captureFocus() {
       const el = document.activeElement;
       if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'file' || !el.closest('#app, [data-un-sheet-host]')) return null;
@@ -1427,10 +1489,15 @@
           : view === 'exercise' ? exerciseChartHtml()
           : muscleChartHtml();
         const focused = captureFocus();
+        const bwTyped = captureBodyweightInput();
         document.getElementById('app').innerHTML = html;
         syncSheets();
         wireInputs();
         restoreFocus(focused);
+        if (bwTyped !== null) {
+          const el = document.getElementById('bw-today-input');
+          if (el) el.value = bwTyped;
+        }
         wireNative();
         tick();
       };
@@ -1557,6 +1624,12 @@
             first.scrollIntoView({ block: 'nearest' });
           }
         }
+      }
+      const bwt = document.getElementById('bw-today-input');
+      if (bwt) {
+        bwt.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); handle('log-bw'); }
+        });
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
@@ -2053,6 +2126,10 @@
     // ---------- data loading ----------
     async function loadHome() {
       sessions = (await api('GET', '/api/sessions')).sessions;
+      try {
+        const bw = await api('GET', '/api/bodyweight');
+        bodyweightSeries = bw.entries;
+      } catch (_) {} // empty sparkline + input placeholder is a fine fallback
       view = 'home';
       session = null;
       render();
@@ -2672,6 +2749,24 @@
           pendingFocus = 'bw';
           render();
           break;
+        case 'log-bw': {
+          const input = document.getElementById('bw-today-input');
+          const raw = ((input && input.value) || '').trim();
+          if (raw === '') { toast('Enter a weight'); break; }
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n <= 0) { toast('Enter a valid weight'); break; }
+          const kg = unitToKg(n); // input is in the display unit, stored in kg
+          if (kg < 20 || kg > 400) { toast('Weight must be between 20 and 400 kg'); break; }
+          try {
+            const r = await api('POST', '/api/bodyweight', { weight_kg: kg });
+            bodyweightSeries = [{ log_date: r.log_date, weight_kg: r.weight_kg }, ...bodyweightSeries.filter((e) => e.log_date !== r.log_date)];
+            bodyweightKg = r.weight_kg; // latest weight doubles as the strength-level reference
+            render();
+          } catch (err) {
+            toast(err.message);
+          }
+          break;
+        }
         case 'close-bw-editor':
           bwEditor = null;
           render();
