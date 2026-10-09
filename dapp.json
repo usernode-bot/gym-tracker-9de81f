@@ -29,6 +29,11 @@
       "expectText": "Staging demo workout note"
     },
     {
+      "name": "PR badge shows on home cards with a beaten best",
+      "path": "/?demo=1",
+      "expectSelector": "[data-pr-badge]"
+    },
+    {
       "name": "Import/export footer renders",
       "path": "/?demo=1",
       "expectText": "Export JSON"
