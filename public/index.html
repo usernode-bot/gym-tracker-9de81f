@@ -272,6 +272,11 @@
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
     let pendingNav = null;       // 'push' | 'pop' — consumed by the next render() as a kit screen transition
     let isStaging = false;       // deploy environment, from GET /api/settings (only gates the ?logset=1 test hook)
+    // AMRAP (issue #41): per-set as-many-reps-as-possible mode. openForm.draft
+    // carries the toggle + countdown target while the form is open; amrapClock
+    // { end, interval } drives the in-form countdown readout and is torn down
+    // whenever the form re-renders, closes, or the set logs.
+    let amrapClock = null;
     // Optimistic set saves: a logged set lands in the local session payload
     // and renders immediately, with the POST/PATCH settling in the
     // background. Temp ids are negative so they can never collide with a
@@ -349,9 +354,12 @@
       if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
       return NaN;
     }
+    function fmtAmrap(sec) {
+      return sec >= 60 ? fmtDur(sec) : '0:' + String(sec).padStart(2, '0');
+    }
     function fmtSet(s) {
       const side = s.side === 'left' ? 'L ' : s.side === 'right' ? 'R ' : '';
-      if (s.set_type === 'reps') return side + s.reps + ' × ' + fmtW(s.weight) + ' ' + weightUnit;
+      if (s.set_type === 'reps') return side + s.reps + ' × ' + fmtW(s.weight) + ' ' + weightUnit + (s.amrap_target_seconds ? ' · AMRAP ' + fmtAmrap(s.amrap_target_seconds) : '');
       return side + fmtDur(s.duration_seconds) + (s.effort ? ' · ' + s.effort : '');
     }
     // One-line summary of a set list where drop sets chain onto their parent:
@@ -546,9 +554,25 @@
       // No type toggle here: the fields' shape is fixed by the exercise's
       // type (or, when editing a legacy mismatched set, by the set's own).
       const d = openForm.draft;
+      const autoReps = d.amrap && d.type === 'reps';
+      const countdownHtml = d.amrap
+        ? `<div class="flex items-center gap-2 mt-2 rounded-lg bg-zinc-200/70 dark:bg-zinc-800/40 px-2.5 py-1.5">
+             <span class="text-xs text-zinc-600 dark:text-zinc-400 flex-1">Time cap</span>
+             <button type="button" data-action="form-amrap-target" data-delta="-30" aria-label="30 seconds shorter" class="un-touch-target w-8 h-8 rounded-full border border-zinc-300 dark:border-zinc-600 text-sm font-semibold text-zinc-600 dark:text-zinc-300 flex items-center justify-center">−30s</button>
+             <span id="amrap-countdown" data-amrap-countdown class="font-mono text-lg tabular-nums text-violet-600 dark:text-violet-400 w-16 text-center">${esc(d.amrapTarget ? fmtAmrap(d.amrapTarget) : '')}</span>
+             <button type="button" data-action="form-amrap-target" data-delta="30" aria-label="30 seconds longer" class="un-touch-target w-8 h-8 rounded-full border border-zinc-300 dark:border-zinc-600 text-sm font-semibold text-zinc-600 dark:text-zinc-300 flex items-center justify-center">+30s</button>
+           </div>`
+        : '';
+      const repInput = autoReps
+        ? `<div class="flex items-center gap-1.5">
+             <button type="button" data-action="form-reps-step" data-delta="-1" aria-label="One rep less" class="un-touch-target w-9 h-9 shrink-0 rounded-lg bg-zinc-200 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 text-lg leading-none flex items-center justify-center">−</button>
+             <input name="reps" type="number" min="0" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-16 text-center flex-1 min-w-0">
+             <button type="button" data-action="form-reps-step" data-delta="1" aria-label="One rep more" class="un-touch-target w-9 h-9 shrink-0 rounded-lg bg-violet-600 text-white text-lg leading-none flex items-center justify-center">+</button>
+           </div>`
+        : `<input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">`;
       const fields = d.type === 'reps'
         ? `<div class="flex gap-2 mt-2">
-             <input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">
+             ${repInput}
              <div class="relative w-1/2 min-w-0">
                <input name="weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(d.weight)}" placeholder="weight (${weightUnit})" class="${inp} w-full pr-9">
                <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
@@ -566,9 +590,11 @@
       const showDrop = pos > 0 || d.drop;
       const sideBtn = (v, label) => `<button type="button" data-action="form-side" data-side="${v}" class="flex-1 py-1 rounded-lg text-xs transition-colors ${(d.side || '') === v ? 'bg-violet-600 text-white' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">${label}</button>`;
       return `<form id="set-form" class="mt-2 rounded-xl bg-zinc-100 dark:bg-zinc-800/70 border border-zinc-200 dark:border-zinc-700 p-2.5">
+        ${countdownHtml}
         ${fields}
         <div class="flex items-center gap-2 mt-2">
           <div class="flex gap-1 flex-1">${sideBtn('', 'Both')}${sideBtn('left', 'L')}${sideBtn('right', 'R')}</div>
+          <label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap ml-auto">AMRAP <input type="checkbox" name="amrap" ${d.amrap ? 'checked' : ''} class="${hasKit() ? 'un-switch' : 'accent-violet-600'}"></label>
           ${showDrop ? `<label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap">↘ Drop set <input type="checkbox" name="drop" ${d.drop ? 'checked' : ''} class="${hasKit() ? 'un-switch' : 'accent-violet-600'}"></label>` : ''}
         </div>
         <input name="note" value="${esc(d.note)}" placeholder="note (optional)" maxlength="500" autocomplete="off" class="${inp} w-full mt-2">
@@ -1410,6 +1436,10 @@
       // animation on high-frequency updates (toggles, typing, undo commits).
       const nav = pendingNav;
       pendingNav = null;
+      // The AMRAP countdown lives in the open form's markup; a re-render
+      // swaps that markup, so the clock stops here and wireInputs restarts
+      // it when the freshly rendered form still carries an active AMRAP.
+      stopAmrapClock();
       // The dock lives outside #app, so it's shown/hidden here rather than
       // being re-emitted by the view's HTML. Toggled outside the transition
       // callback so it never joins the root slide.
@@ -1548,6 +1578,12 @@
       const form = document.getElementById('set-form');
       if (form) {
         form.addEventListener('submit', onSetSubmit);
+        const am = form.querySelector('[name="amrap"]');
+        if (am) {
+          am.addEventListener('change', () => {
+            handle('toggle-amrap', am).catch((err) => toast(err.message));
+          });
+        }
         if (takeFocus('set-form')) {
           // Auto-focus only a blank form — focusing a pre-filled one pops the
           // mobile keyboard over values the user may just want to log as-is.
@@ -1557,6 +1593,11 @@
             first.scrollIntoView({ block: 'nearest' });
           }
         }
+        // The countdown + tap-to-count controls live in the form's markup,
+        // which this render just swapped — (re)start the clock when the
+        // rendered form is an active AMRAP, stop it when it isn't.
+        if (openForm && openForm.draft && openForm.draft.amrap) startAmrapClock();
+        else stopAmrapClock();
       }
       const ni = document.getElementById('entry-note-input');
       if (ni) {
@@ -1719,6 +1760,11 @@
       '                  before it; a run of consecutive drop:true sets after a normal',
       '                  set displays as one drop chain, so array order matters. The',
       '                  first set of an exercise should not be drop:true.',
+      '    "amrap"       optional boolean, default false. true marks this set as an',
+      '                  AMRAP set: as many reps as possible against a time cap.',
+      '    "amrap_target_seconds"  optional integer, 1 to 86400. REQUIRED when',
+      '                  "amrap" is true: the countdown length the set was',
+      '                  performed against, in seconds.',
       '    "note"        optional string or null, max 500 chars.',
       '    "created_at"  optional date string; defaults to the session\'s started_at.',
       '                  Only set it if the source has real per-set timestamps.',
@@ -1745,7 +1791,9 @@
       '          "sets": [',
       '            { "type": "reps", "reps": 10, "weight": 60 },',
       '            { "type": "reps", "reps": 8, "weight": 70, "note": "spotter on last rep" },',
-      '            { "type": "reps", "reps": 8, "weight": 50, "drop": true }',
+      '            { "type": "reps", "reps": 8, "weight": 50, "drop": true },',
+      '            { "type": "reps", "reps": 21, "weight": 0, "amrap": true,',
+      '              "amrap_target_seconds": 180 }',
       '          ]',
       '        },',
       '        {',
@@ -1838,6 +1886,8 @@
         effort: st.effort || '',
         side: st.side || '',
         drop: !!st.is_drop,
+        amrap: !!st.amrap_target_seconds,
+        amrapTarget: st.amrap_target_seconds || getAmrapTarget(),
         note: st.note || '',
       };
     }
@@ -1857,14 +1907,67 @@
         (en.last_time ? lastSetOfType(en.last_time.sets, type) : null);
       // Side carries over (log left, flip one toggle to log right); note and
       // the drop flag always start fresh.
-      if (src) { const d = draftFromSet(src); d.note = ''; d.drop = false; return d; }
-      return { type, reps: '', weight: '', weightKg: null, duration: '', effort: '', side: '', drop: false, note: '' };
+      if (src) { const d = draftFromSet(src); d.note = ''; d.drop = false; d.amrap = false; return d; }
+      return { type, reps: '', weight: '', weightKg: null, duration: '', effort: '', side: '', drop: false, amrap: false, amrapTarget: getAmrapTarget(), note: '' };
     }
     function readDraft(form) {
       const g = (n) => { const i = form.querySelector('[name="' + n + '"]'); return i ? i.value : ''; };
       const dropEl = form.querySelector('[name="drop"]');
-      return { type: openForm.draft.type, side: openForm.draft.side || '', reps: g('reps'), weight: g('weight'), weightKg: openForm.draft.weightKg ?? null, duration: g('duration'), effort: g('effort'), drop: dropEl ? dropEl.checked : !!openForm.draft.drop, note: g('note') };
+      const amrapEl = form.querySelector('[name="amrap"]');
+      const on = amrapEl ? amrapEl.checked : !!openForm.draft.amrap;
+      return { type: openForm.draft.type, side: openForm.draft.side || '', reps: g('reps'), weight: g('weight'), weightKg: openForm.draft.weightKg ?? null, duration: g('duration'), effort: g('effort'), drop: dropEl ? dropEl.checked : !!openForm.draft.drop, amrap: on, amrapTarget: on ? amrapTargetFromDraft(openForm.draft) : null, note: g('note') };
     }
+    // The AMRAP countdown target: remembered per device across sets (a
+    // 3-minute push-up AMRAP is followed by another), defaulting to 3:00.
+    const AMRAP_TARGET_KEY = 'gym-tracker-amrap-target';
+    const AMRAP_DEFAULT_SEC = 180;
+    function amrapTargetFromDraft(d) {
+      const n = Number(d && d.amrapTarget);
+      return Number.isInteger(n) && n > 0 ? n : AMRAP_DEFAULT_SEC;
+    }
+    function setAmrapTarget(sec) {
+      restTargetSec; // no relation to the rest target; keeps the two knobs independent
+      try { localStorage.setItem(AMRAP_TARGET_KEY, String(sec)); } catch (_) {}
+    }
+    function getAmrapTarget() {
+      try {
+        const n = parseInt(localStorage.getItem(AMRAP_TARGET_KEY) || '', 10);
+        if (Number.isInteger(n) && n > 0 && n <= 86400) return n;
+      } catch (_) {}
+      return AMRAP_DEFAULT_SEC;
+    }
+    // ---------- AMRAP countdown + auto rep input ----------
+    // tick hook, called from the app's existing 1 Hz interval. Recomputes the
+    // remaining time and pushes it into the + tap button's counter — no new
+    // timer of its own, and a pure readout update (no re-render).
+    function amrapTick() {
+      const remaining = amrapClock ? Math.max(0, Math.ceil((amrapClock.end - Date.now()) / 1000)) : null;
+      const cd = document.getElementById('amrap-countdown');
+      if (cd) cd.textContent = remaining === null ? '' : fmtAmrap(remaining);
+      const btn = document.getElementById('amrap-plus');
+      if (btn) {
+        btn.textContent = '+' + (remaining === null ? '0' : String(remaining));
+        btn.setAttribute('aria-label', 'Add ' + (remaining || 0) + ' reps');
+        btn.dataset.reps = String(remaining || 0);
+      }
+    }
+    function stopAmrapClock() {
+      if (amrapClock) { clearInterval(amrapClock.interval); amrapClock = null; }
+    }
+    function startAmrapClock() {
+      stopAmrapClock();
+      const d = openForm && openForm.draft;
+      if (!d || !d.amrap) return;
+      const sec = amrapTargetFromDraft(d);
+      amrapClock = { end: Date.now() + sec * 1000, interval: null, target: sec };
+      amrapClock.interval = setInterval(amrapTick, 250);
+      amrapTick();
+    }
+    // Re-arm after a target change without letting the clock drift visibly.
+    function resetAmrapClock() {
+      if (amrapClock) startAmrapClock();
+    }
+
     // The kg value to save: if the field still shows the untouched original,
     // keep the exact stored kg; otherwise convert what was typed.
     function draftWeightKg(d) {
@@ -1881,6 +1984,13 @@
       if (!openForm || openForm.saving) return; // a second tap must not log twice
       const d = readDraft(e.target);
       openForm.draft = d;
+      if (d.amrap && d.type === 'reps') {
+        const n = Number(d.reps);
+        if (d.reps.trim() === '' || !Number.isFinite(n) || n < 1) {
+          openForm.error = 'Tap + to count reps, or type them in';
+          return render();
+        }
+      }
       const entryId = openForm.entryId;
       const setId = openForm.setId;
       // No set_type: the server derives it from the exercise on create and
@@ -1897,6 +2007,7 @@
         body.duration_seconds = dur;
         body.effort = d.effort;
       }
+      if (d.amrap) body.amrap = true;
       // A swipe delete still inside its undo window is only worth waiting for
       // when it would remove the very row (or entry) being written to;
       // anything else commits alongside the save instead of ahead of it.
@@ -1916,6 +2027,7 @@
       if (!en) { openForm = null; return refreshSession(); }
       if (setId) startSetEdit(en, setId, body);
       else startSetCreate(en, body);
+      if (openForm && openForm.draft.amrap) startAmrapClock();
     }
 
     // ---------- optimistic set saves ----------
@@ -1932,6 +2044,7 @@
         effort: type === 'time' ? trim(body.effort, 120) : null,
         side: body.side || null,
         is_drop: !!body.is_drop,
+        amrap_target_seconds: body.amrap ? (Number.isInteger(body.amrap_target_seconds) ? body.amrap_target_seconds : amrapTargetFromDraft(null)) : null,
         note: trim(body.note, 500),
       };
     }
@@ -1941,6 +2054,7 @@
     function startSetCreate(en, body) {
       const type = en.exercise_type === 'time' ? 'time' : 'reps';
       const draft = openForm.draft;
+      if (draft.amrap) setAmrapTarget(amrapTargetFromDraft(draft));
       const row = Object.assign(
         { id: --tempSetSeq, session_exercise_id: en.id, created_at: new Date().toISOString(), pending: true },
         setRowValues(type, body)
@@ -1969,6 +2083,7 @@
       if (i < 0) { openForm = null; return refreshSession(); }
       const before = Object.assign({}, en.sets[i]);
       const draft = openForm.draft;
+      if (draft.amrap) setAmrapTarget(amrapTargetFromDraft(draft));
       en.sets[i] = Object.assign({}, before, setRowValues(before.set_type, body), { pending: true });
       openForm = null;
       render();
@@ -2188,6 +2303,7 @@
       if (sub) sub.textContent = restSubText();
       const kick = document.getElementById('rest-kicker');
       if (kick) kick.textContent = restKicker();
+      amrapTick();
       // Crossing zero: restyle once (not every tick) and fire the cue.
       if (r.over !== wasOver) {
         el.dataset.over = r.over ? '1' : '0';
@@ -2515,7 +2631,14 @@
     }
     window.addEventListener('pagehide', flushPendingDeleteKeepalive);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') flushPendingDeleteKeepalive();
+      if (document.visibilityState === 'hidden') {
+        flushPendingDeleteKeepalive();
+        // The form's countdown must not keep running under the shell: the
+        // shell keeps the app loaded but hidden, so stopping the clock here
+        // means returning to it shows a fresh remaining time, and the
+        // 250ms interval does not burn cycles in the background.
+        stopAmrapClock();
+      }
       else if (needsRefreshOnShow) {
         needsRefreshOnShow = false;
         (view === 'exercise' && exerciseView ? refreshExerciseView()
@@ -2816,6 +2939,32 @@
           render();
           break;
         }
+        case 'toggle-amrap': {
+          const form = document.getElementById('set-form');
+          if (form) openForm.draft = readDraft(form);
+          openForm.draft.amrap = el.checked;
+          openForm.draft.amrapTarget = el.checked ? amrapTargetFromDraft(openForm.draft) : null;
+          render();
+          break;
+        }
+        case 'form-amrap-target': {
+          const form = document.getElementById('set-form');
+          if (form) openForm.draft = readDraft(form);
+          const cur = amrapTargetFromDraft(openForm.draft);
+          const next = Math.min(3600, Math.max(30, cur + parseInt(el.dataset.delta || '0', 10)));
+          if (next !== cur) { openForm.draft.amrapTarget = next; render(); }
+          break;
+        }
+        case 'form-reps-step':
+        case 'amrap-count-rep': {
+          const form = document.getElementById('set-form');
+          const field = form && form.querySelector('[name="reps"]');
+          if (!field) break;
+          const delta = action === 'amrap-count-rep' ? 1 : parseInt(el.dataset.delta || '0', 10);
+          const n = Math.max(0, (parseInt(field.value, 10) || 0) + delta);
+          field.value = String(n);
+          break;
+        }
         case 'session-note':
           editingSessionNote = true;
           pendingFocus = 'session-note';
@@ -2998,6 +3147,37 @@
             if (form) {
               form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
               await settlePendingSets();
+            }
+          }
+          // &amrap=1 opens the add-set form with AMRAP armed (the remembered
+          // target, so the countdown runs). UI-state only: nothing is written,
+          // so it behaves identically in production. &amrap=2 additionally
+          // counts one rep per second, twice, then submits the form for real —
+          // preview-only (gated on isStaging) because it writes a set.
+          if (params.get('amrap') === '1' && session && session.entries.length) {
+            const en = session.entries.find((x) => x.sets.length) || session.entries[0];
+            await handle('open-add-set', { dataset: { entry: String(en.id) } });
+            const am = document.querySelector('#set-form [name="amrap"]');
+            if (am) {
+              am.checked = true;
+              await handle('toggle-amrap', am);
+            }
+          }
+          if (params.get('amrap') === '2' && isStaging && session && session.entries.length) {
+            const en = session.entries.find((x) => x.sets.length) || session.entries[0];
+            await handle('open-add-set', { dataset: { entry: String(en.id) } });
+            const am = document.querySelector('#set-form [name="amrap"]');
+            if (am) {
+              am.checked = true;
+              await handle('toggle-amrap', am);
+              await handle('amrap-count-rep', { dataset: {} });
+              await new Promise((r) => setTimeout(r, 1000));
+              await handle('amrap-count-rep', { dataset: {} });
+              const form = document.getElementById('set-form');
+              if (form) {
+                form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                await settlePendingSets();
+              }
             }
           }
           // &rest=1 arms the rest timer and opens its expanded card — the

@@ -176,8 +176,8 @@ async function ensureStagingUserData(userId) {
           // (derived from row order) survives the copy.
           await client.query(
             `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds,
-                               effort, side, is_drop, note, created_at)
-             SELECT $1, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at
+                               effort, side, is_drop, is_amrap, amrap_target_seconds, note, created_at)
+             SELECT $1, set_type, reps, weight, duration_seconds, effort, side, is_drop, is_amrap, amrap_target_seconds, note, created_at
              FROM sets WHERE session_exercise_id = $2 ORDER BY id`,
             [newEntry.id, en.id]
           );
@@ -259,7 +259,7 @@ function buildSetValues(body, existing, createType) {
     };
   }
   const inherit = (k) => (existing ? existing[k] : undefined);
-  const out = { set_type, reps: null, weight: null, duration_seconds: null, effort: null };
+  const out = { set_type, reps: null, weight: null, duration_seconds: null, effort: null, is_amrap: false, amrap_target_seconds: null };
 
   if (set_type === 'reps') {
     const repsSrc = has('reps') ? body.reps : inherit('reps');
@@ -291,6 +291,21 @@ function buildSetValues(body, existing, createType) {
   }
   out.side = sideSrc === 'left' || sideSrc === 'right' ? sideSrc : null;
   out.is_drop = has('is_drop') ? !!body.is_drop : !!(existing && existing.is_drop);
+  // AMRAP is a tag, not a shape: it rides along on either set type. An
+  // untagged body inherits (edit) / stays clear (create).
+  const amrapSrc = has('amrap') ? body.amrap : (has('is_amrap') ? body.is_amrap : (existing ? !!existing.is_amrap : false));
+  if (amrapSrc) {
+    const targetSrc = has('amrap_target_seconds') ? body.amrap_target_seconds : (existing ? existing.amrap_target_seconds : undefined);
+    const target = Number(targetSrc);
+    if (!Number.isInteger(target) || target < 1 || target > 86400) {
+      return { error: 'amrap_target_seconds must be a whole number between 1 and 86400' };
+    }
+    out.is_amrap = true;
+    out.amrap_target_seconds = target;
+  } else {
+    out.is_amrap = false;
+    out.amrap_target_seconds = null;
+  }
   out.note = has('note') ? cleanNote(body.note) : (existing ? existing.note : null);
   return { values: out };
 }
@@ -310,7 +325,8 @@ async function findEntry(entryId, userId) {
 async function findSet(setId, userId) {
   const { rows } = await pool.query(
     `SELECT st.id, st.session_exercise_id, st.set_type, st.reps, st.weight,
-            st.duration_seconds, st.effort, st.side, st.is_drop, st.note, st.created_at
+            st.duration_seconds, st.effort, st.side, st.is_drop,
+            st.is_amrap, st.amrap_target_seconds, st.note, st.created_at
      FROM sets st
      JOIN session_exercises se ON se.id = st.session_exercise_id
      JOIN workout_sessions s ON s.id = se.session_id
@@ -390,7 +406,7 @@ app.get('/api/sessions/:id', wrap(async (req, res) => {
   const setsByEntry = {};
   if (entryIds.length) {
     const sets = (await pool.query(
-      `SELECT id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at
+      `SELECT id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, is_amrap, amrap_target_seconds, note, created_at
        FROM sets WHERE session_exercise_id = ANY($1::int[])
        ORDER BY created_at, id`,
       [entryIds]
@@ -690,10 +706,10 @@ app.post('/api/session-exercises/:id/sets', wrap(async (req, res) => {
   const { error, values } = buildSetValues(req.body || {}, null, entry.exercise_type || 'reps');
   if (error) return res.status(400).json({ error });
   const { rows } = await pool.query(
-    `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at`,
-    [entryId, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.side, values.is_drop, values.note]
+    `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, is_amrap, amrap_target_seconds, note)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, is_amrap, amrap_target_seconds, note, created_at`,
+    [entryId, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.side, values.is_drop, values.is_amrap, values.amrap_target_seconds, values.note]
   );
   res.json(rows[0]);
 }));
@@ -706,10 +722,10 @@ app.patch('/api/sets/:id', wrap(async (req, res) => {
   const { error, values } = buildSetValues(req.body || {}, existing);
   if (error) return res.status(400).json({ error });
   const { rows } = await pool.query(
-    `UPDATE sets SET set_type = $2, reps = $3, weight = $4, duration_seconds = $5, effort = $6, side = $7, is_drop = $8, note = $9
+    `UPDATE sets SET set_type = $2, reps = $3, weight = $4, duration_seconds = $5, effort = $6, side = $7, is_drop = $8, is_amrap = $9, amrap_target_seconds = $10, note = $11
      WHERE id = $1
-     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at`,
-    [id, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.side, values.is_drop, values.note]
+     RETURNING id, session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, is_amrap, amrap_target_seconds, note, created_at`,
+    [id, values.set_type, values.reps, values.weight, values.duration_seconds, values.effort, values.side, values.is_drop, values.is_amrap, values.amrap_target_seconds, values.note]
   );
   res.json(rows[0]);
 }));
@@ -735,6 +751,10 @@ function exportSet(st) {
     : { type: 'time', duration_seconds: st.duration_seconds, effort: st.effort };
   out.side = st.side;
   out.drop = st.is_drop;
+  if (st.is_amrap) {
+    out.amrap = true;
+    out.amrap_target_seconds = parseInt(st.amrap_target_seconds, 10) || null;
+  }
   out.note = st.note;
   out.created_at = st.created_at;
   return out;
@@ -757,7 +777,8 @@ app.get('/api/export', wrap(async (req, res) => {
   )).rows;
   const sets = (await pool.query(
     `SELECT st.session_exercise_id, st.set_type, st.reps, st.weight,
-            st.duration_seconds, st.effort, st.side, st.is_drop, st.note, st.created_at
+            st.duration_seconds, st.effort, st.side, st.is_drop,
+            st.is_amrap, st.amrap_target_seconds, st.note, st.created_at
      FROM sets st
      JOIN session_exercises se ON se.id = st.session_exercise_id
      JOIN workout_sessions s ON s.id = se.session_id
@@ -939,9 +960,9 @@ app.post('/api/import', wrap(async (req, res) => {
         )).rows[0].id;
         for (const v of en.sets) {
           await client.query(
-            `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, note, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [entryId, v.set_type, v.reps, v.weight, v.duration_seconds, v.effort, v.side, v.is_drop, v.note, v.created_at || s.started_at]
+            `INSERT INTO sets (session_exercise_id, set_type, reps, weight, duration_seconds, effort, side, is_drop, is_amrap, amrap_target_seconds, note, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [entryId, v.set_type, v.reps, v.weight, v.duration_seconds, v.effort, v.side, v.is_drop, v.is_amrap, v.amrap_target_seconds, v.note, v.created_at || s.started_at]
           );
         }
       }
@@ -1118,6 +1139,14 @@ async function migrate() {
   `);
   await pool.query(`ALTER TABLE sets ADD COLUMN IF NOT EXISTS side TEXT CHECK (side IN ('left', 'right'))`);
   await pool.query(`ALTER TABLE sets ADD COLUMN IF NOT EXISTS is_drop BOOLEAN NOT NULL DEFAULT FALSE`);
+  // AMRAP set: as-many-reps-as-possible against a countdown. Presence is
+  // purely informational, the row still carries its reps/time values like
+  // any other set. Non-AMRAP rows keep both columns NULL so at most one of
+  // the two is ever set.
+  await pool.query(`ALTER TABLE sets ADD COLUMN IF NOT EXISTS is_amrap BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE sets ADD COLUMN IF NOT EXISTS amrap_target_seconds INTEGER`);
+  await pool.query(`ALTER TABLE sets DROP CONSTRAINT IF EXISTS sets_amrap_shape_chk`);
+  await pool.query(`ALTER TABLE sets ADD CONSTRAINT sets_amrap_shape_chk CHECK ((is_amrap = FALSE AND amrap_target_seconds IS NULL) OR (is_amrap = TRUE AND amrap_target_seconds IS NOT NULL AND amrap_target_seconds >= 1))`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS sets_entry_idx ON sets (session_exercise_id)
   `);
@@ -1298,6 +1327,15 @@ async function seedStagingDemo() {
       (900020, 900011, 'reps', 8, 70,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '3 minutes'),
       (900021, 900011, 'reps', 6, 75,   NULL, NULL,      NULL,    FALSE, NULL,                    NOW() - INTERVAL '9 days' + INTERVAL '6 minutes'),
       (900119, 900029, 'reps', 12, 0,   NULL, NULL,      NULL,    FALSE, 'Staging demo long set note — slow eccentric on all twelve reps with the shoulder blades pinned down, plus a two second pause at the bottom of the final rep, which is more than one line of text on a phone', NOW() - INTERVAL '2 hours' + INTERVAL '31 minutes')
+    ON CONFLICT (id) DO NOTHING
+  `);
+  // The AMRAP demo set gets its own statement because the big insert's
+  // column list predates the AMRAP columns. 21 push-ups against a 3:00 cap,
+  // logged two hours ago in the newest demo session so the tag renders
+  // without any scrolling.
+  await pool.query(`
+    INSERT INTO sets (id, session_exercise_id, set_type, reps, weight, side, is_drop, is_amrap, amrap_target_seconds, note, created_at)
+    VALUES (900130, 900029, 'reps', 21, 0, NULL, FALSE, TRUE, 180, 'Staging demo AMRAP set — as many push-ups as possible in three minutes', NOW() - INTERVAL '2 hours' + INTERVAL '32 minutes')
     ON CONFLICT (id) DO NOTHING
   `);
   // Sessions 900010–900013 flesh out the last three weeks with a pull/press
