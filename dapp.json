@@ -279,6 +279,21 @@
       "expectSelector": "#set-form button[type=\"submit\"]"
     },
     {
+      "name": "Rest timer steps aside while the set form is open",
+      "path": "/?demo=1&session=900002&addset=1",
+      "expectSelector": "body:has(#set-form) #rest-dock.hidden"
+    },
+    {
+      "name": "Rest timer shows in a session with nothing open",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "#rest-dock:not(.hidden) #stopwatch"
+    },
+    {
+      "name": "Rest timer steps aside while the add-exercise sheet is open",
+      "path": "/?demo=1&session=900002&picker=1",
+      "expectSelector": "body:has(#picker-search) #rest-dock.hidden"
+    },
+    {
       "name": "Logging a set arms the rest timer",
       "path": "/?session=latest&logset=1",
       "expectSelector": "#stopwatch[data-armed=\"1\"]"
