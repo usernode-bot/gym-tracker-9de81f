@@ -263,6 +263,7 @@
     let bwEditor = null;      // truthy while the bodyweight sheet is open
     let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
     let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
+    let volTarget = null;     // this week's volume vs target, from /api/volume/weekly-target (home footer)
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let restTargetSec = 120;   // rest target in seconds (30..600, multiple of 30) — set below from localStorage
     let restExpanded = false;  // the expanded rest control card is open
@@ -335,6 +336,14 @@
     function unitToKg(n) {
       return weightUnit === 'lbs' ? Math.round((n / LBS_PER_KG) * 100) / 100 : n;
     }
+    // Volume mass (kg, logged as reps x weight) in the display unit, grouped
+    // with thousands separators — the dashboard's weekly-volume readout.
+    function fmtVol(kg) {
+      const n = kgToUnitNum(kg);
+      if (!Number.isFinite(n)) return '0';
+      return Math.round(n).toLocaleString();
+    }
+
     function fmtW(w) {
       const n = kgToUnitNum(w);
       return Number.isFinite(n) ? String(n) : String(w);
@@ -508,6 +517,64 @@
     }
 
 
+    // Weekly volume vs target — the dashboard's bottom section. Completed
+    // sessions are the Monday-started calendar weeks the server buckets; the
+    // headline compares this week's total weight lifted against the target,
+    // and the list names this week's sessions and their volume.
+    function volumeSummaryHtml() {
+      const v = volTarget;
+      if (!v) {
+        return `<div id="volume-summary" data-volume-summary class="mt-6 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
+          <div class="flex items-baseline justify-between mb-2">
+            <div class="text-sm font-semibold text-zinc-600 dark:text-zinc-300">This week</div>
+            <div class="text-xs text-zinc-400 dark:text-zinc-600">Volume vs target</div>
+          </div>
+          <div class="text-center text-zinc-500 dark:text-zinc-600 text-sm py-4">Loading volume…</div>
+        </div>`;
+      }
+      // Volume is the weight lifted, weighted per exercise by the catalog's
+      // volume metric: reps x weight x factor for a normal lift (factor 1),
+      // plus reps x the user's bodyweight x factor for a bodyweight set
+      // (weight 0), so unweighted work still counts. Target is the same
+      // metric averaged over the last complete weeks, so the bar and the
+      // headline always agree.
+      const done = v.factor_volume_kg || 0;
+      const target = v.target_kg || 0;
+      const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
+      const over = target > 0 && done >= target;
+      const barColor = over ? 'bg-emerald-600' : 'bg-violet-600';
+      const targetNote = v.has_history ? '' : ' · starting target';
+      const rows = (v.sessions || []).length
+        ? v.sessions.map((s) => `<div class="flex items-baseline justify-between gap-3 py-1.5">
+            <span class="text-sm text-zinc-700 dark:text-zinc-200 min-w-0 truncate">${fmtDate(s.started_at)}</span>
+            <span class="text-sm text-zinc-500 dark:text-zinc-400 shrink-0">${fmtVol(s.factor_volume_kg)} ${weightUnit}</span>
+          </div>`).join('')
+        : `<div class="text-sm text-zinc-500 dark:text-zinc-600 py-2">No sessions logged this week yet.</div>`;
+      return `<div id="volume-summary" data-volume-summary class="mt-6 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-3">
+        <div class="flex items-baseline justify-between mb-1">
+          <div class="text-sm font-semibold text-zinc-600 dark:text-zinc-300">This week</div>
+          <div class="text-xs text-zinc-400 dark:text-zinc-600">Volume vs target</div>
+        </div>
+        <div class="flex items-baseline gap-2 mb-2">
+          <span class="text-2xl font-bold">${fmtVol(done)}</span>
+          <span class="text-sm text-zinc-500 dark:text-zinc-400">${weightUnit} lifted</span>
+          <span class="ml-auto text-sm font-medium ${over ? 'text-emerald-600 dark:text-emerald-400' : 'text-violet-600 dark:text-violet-400'}">${pct}%</span>
+        </div>
+        <div class="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden mb-1.5">
+          <div class="${barColor} h-full rounded-full transition-all" style="width:${pct}%"></div>
+        </div>
+        <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">Target ${fmtVol(target)} ${weightUnit} a week${targetNote}</div>
+        <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">Sessions this week</div>
+        <div class="divide-y divide-zinc-200 dark:divide-zinc-800">${rows}</div>
+      </div>`;
+    }
+
+    // Late-fill the section once the fetch lands (the home list paints first).
+    function renderVolumeSummary() {
+      const slot = document.getElementById('volume-summary');
+      if (slot) slot.outerHTML = volumeSummaryHtml();
+    }
+
     function homeHtml() {
       const visible = sessions.filter((s) => !isPendingDelete('session', s.id));
       // Kit: bare rows inside an inset-grouped .un-group card (the kit's
@@ -539,6 +606,7 @@
           <button data-action="export-json" class="un-touch-target w-full py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-sm font-medium">Export JSON</button>
           <button data-action="import-json" class="un-touch-target w-full py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-sm font-medium">Import JSON</button>
         </div>
+        ${volumeSummaryHtml()}
         ${!hasKit() && importSheet ? importSheetHtml() : ''}${!hasKit() && exportSheet ? exportSheetHtml() : ''}`;
     }
 
@@ -2055,6 +2123,13 @@
       view = 'home';
       session = null;
       render();
+      // Weekly volume vs target lands after the list paints (late-fill, same
+      // pattern as the Progress hub's body diagram) — its failure only costs
+      // the section, never the home screen.
+      try {
+        volTarget = await api('GET', '/api/volume/weekly-target');
+      } catch (_) { volTarget = null; }
+      if (view === 'home') renderVolumeSummary();
     }
     async function refreshSession() {
       try {
