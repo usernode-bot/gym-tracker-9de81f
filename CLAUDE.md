@@ -49,7 +49,12 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. For the same reason, `GET /api/settings`
+  treats the demo user's seeded settings row as demo-dataset-only
+  outside a `?demo=1` read — the platform's signed-in staging
+  viewer can share the demo user's id (900001), and that viewer
+  must still see the prompt. Strictly `IS_STAGING`; no-op in
+  production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -161,6 +166,7 @@ view. All workout data is strictly private per user.
   `isStaging`, which comes from the `staging` flag now returned by
   `GET /api/settings` — it writes a set, so it must never run against
   a production account. No feature is gated on that flag.
+- **Session duration** (issue #44): computed client-side by `fmtDuration(started_at, sessionLastSetAt(session))` — `started_at` to the last set's `created_at`, not a sum of rest timers. Shown as "31m" / "1h 5m" after "Workout session" in the session header and at the end of each home row's "exercises · sets" line (`<span data-session-duration>`). The home list gets `MAX(st.created_at) AS last_set_at` from `GET /api/sessions`. Under a minute (imported history records sets at the session start), negative, or no sets: nothing shown. Updates on each render (set logged/deleted), never a live tick.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,

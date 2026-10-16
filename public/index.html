@@ -323,6 +323,27 @@
     function fmtDateShort(ts) {
       return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
     }
+    // Session duration: started_at → last logged set, "Ym" or "Xh Ym".
+    // Under a minute (imported history records sets at the start time) and
+    // empty values show nothing; minutes round down.
+    function fmtDuration(startTs, endTs) {
+      if (!startTs || !endTs) return '';
+      const mins = Math.floor((new Date(endTs) - new Date(startTs)) / 60000);
+      if (!Number.isFinite(mins) || mins < 1) return '';
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return h ? `${h}h ${m}m` : `${m}m`;
+    }
+    function sessionLastSetAt(s) {
+      let last = null;
+      for (const en of s.entries || []) {
+        if (isPendingDelete('entry', en.id)) continue;
+        for (const st of en.sets || []) {
+          if (isPendingDelete('set', st.id) || !st.created_at) continue;
+          if (!last || st.created_at > last) last = st.created_at;
+        }
+      }
+      return last;
+    }
     // Weights are stored in kg; convert only for display / input. lbs are
     // shown to 1 decimal, and lbs input is rounded to 2 decimals of kg
     // (matching the column's NUMERIC(7,2)) before saving.
@@ -520,7 +541,7 @@
           <div data-swipe="session:${s.id}" class="${rowCls}">
             <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
               <div class="font-medium">${fmtDate(s.started_at)}</div>
-              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
+              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}${(() => { const dur = fmtDuration(s.started_at, s.last_set_at); return dur ? ` · <span data-session-duration>${dur}</span>` : ''; })()}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
               ${s.note ? `<div class="text-xs italic text-amber-700 dark:text-amber-200/80 truncate mt-0.5">${esc(s.note)}</div>` : ''}
             </button>
@@ -693,8 +714,9 @@
         : session.note
           ? `<button data-action="session-note" data-note="session" class="block w-full text-left mb-3 text-sm italic leading-snug whitespace-pre-wrap break-words text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
           : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
+      const dur = fmtDuration(session.started_at, sessionLastSetAt(session));
       return `
-        ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
+        ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session' + (dur ? ` · <span data-session-duration>${dur}</span>` : ''), backAction: 'back-home', right: unitSwitcherHtml() })}
         ${sNote}
         <div class="space-y-3">${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-violet-600 dark:text-violet-400 hover:border-violet-500 hover:text-violet-700 dark:hover:text-violet-300 mt-4 mb-4">+ Add exercise</button>
