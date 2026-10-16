@@ -554,6 +554,7 @@
       return `
         ${headerHtml({ title: '', backAction: null, right: unitSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
+        ${visible.some((s) => s.exercise_count > 0) ? `<button data-action="repeat-workout" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-2">↻ Repeat last workout</button>` : ''}
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
         ${list}
         <div class="grid grid-cols-2 gap-2 mt-6">
@@ -2617,7 +2618,7 @@
     // Actions that navigate, mutate data, or open an edit surface commit any
     // pending swipe delete first, so lists stay consistent and a later
     // deferred refresh can't wipe in-progress typing.
-    const FLUSH_BEFORE = new Set(['start-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
+    const FLUSH_BEFORE = new Set(['start-workout', 'repeat-workout', 'open-session', 'back-home', 'delete-session', 'delete-entry', 'delete-set', 'pick-exercise', 'create-exercise', 'create-exercise-typed', 'open-add-set', 'edit-set', 'add-note', 'session-note', 'export-json', 'import-json', 'run-import', 'open-progress', 'open-exercise-chart', 'open-muscle-chart', 'chart-back', 'delete-history-entry', 'delete-exercise', 'delete-exercise-confirm']);
 
     // Actions that address a set by id (or take the session view away) wait
     // for any optimistic save to settle first, so they can never send a temp
@@ -2630,6 +2631,12 @@
       switch (action) {
         case 'start-workout': {
           const s = await api('POST', '/api/sessions');
+          pendingNav = 'push';
+          await openSession(s.id);
+          break;
+        }
+        case 'repeat-workout': {
+          const s = await api('POST', '/api/sessions/repeat');
           pendingNav = 'push';
           await openSession(s.id);
           break;

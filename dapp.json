@@ -14,6 +14,11 @@
       "expectText": "Start workout"
     },
     {
+      "name": "Repeat last workout button renders",
+      "path": "/?demo=1",
+      "expectSelector": "[data-action=\"repeat-workout\"]"
+    },
+    {
       "name": "Swipeable session rows render",
       "path": "/?demo=1",
       "expectSelector": "[data-swipe]"
