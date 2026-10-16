@@ -47,10 +47,52 @@ const INDEX_HTML = renderTemplate('index.html');
 // All staging demo rows (see seed below) belong to this fake user id.
 const DEMO_USER_ID = 900001;
 
+// ---------- Workout templates (Push / Pull / Legs) ----------
+// A template is an ordered list of catalog exercise names. Starting a
+// session from one creates the session, then create-or-gets each exercise
+// under the user's own account (same case-insensitive dedupe and catalog
+// muscle/type defaults as POST /api/exercises) and adds it as an entry, in
+// template order. The prefilled list is fully editable afterwards — every
+// entry is an ordinary session_exercises row, so delete/add/reorder behave
+// exactly like a hand-added exercise. Templates are static, never stored in
+// the DB, and reading them needs no auth (they carry no user data).
+const WORKOUT_TEMPLATES = [
+  {
+    id: 'push',
+    name: 'Push day',
+    description: 'Chest, shoulders and triceps.',
+    exercises: ['Barbell Bench Press', 'Overhead Press', 'Dumbbell Lateral Raise', 'Triceps Pushdown'],
+  },
+  {
+    id: 'pull',
+    name: 'Pull day',
+    description: 'Back and biceps.',
+    exercises: ['Pull-Up', 'Machine Row', 'Face Pull', 'Hammer Curl'],
+  },
+  {
+    id: 'legs',
+    name: 'Leg day',
+    description: 'Quads, hamstrings, glutes and calves.',
+    exercises: ['Barbell Back Squat', 'Romanian Deadlift', 'Leg Press', 'Standing Calf Raise'],
+  },
+];
+
+// Catalog names are the single source for per-user exercise defaults (type,
+// muscle tags). Validate every template name at boot so a typo can't create
+// half a session — and resolve through findCatalogEntry so an alias spelling
+// in a template still lands on its canonical name.
+for (const tpl of WORKOUT_TEMPLATES) {
+  tpl.exercises = tpl.exercises.map((name) => {
+    const hit = findCatalogEntry(name);
+    if (!hit) throw new Error(`workout template "${tpl.id}" references unknown exercise "${name}"`);
+    return hit.name;
+  });
+}
+
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
-const PUBLIC_API_PATHS = new Set(['/health']);
+const PUBLIC_API_PATHS = new Set(['/health', '/api/templates']);
 
 // 5mb: import files can carry a whole workout history (see /api/import limits).
 app.use(express.json({ limit: '5mb' }));
@@ -322,12 +364,60 @@ async function findSet(setId, userId) {
 
 // ---------- Sessions ----------
 
+app.get('/api/templates', (_req, res) => {
+  res.set('Cache-Control', 'private, max-age=3600');
+  res.json({
+    templates: WORKOUT_TEMPLATES.map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      exercises: t.exercises,
+    })),
+  });
+});
+
 app.post('/api/sessions', wrap(async (req, res) => {
-  const { rows } = await pool.query(
-    'INSERT INTO workout_sessions (user_id) VALUES ($1) RETURNING id, started_at',
-    [req.user.id]
-  );
-  res.json(rows[0]);
+  const templateId = req.body && req.body.template;
+  let tpl = null;
+  if (templateId !== undefined && templateId !== null && templateId !== '') {
+    tpl = WORKOUT_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl) return res.status(400).json({ error: 'Unknown template' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [session] } = await client.query(
+      'INSERT INTO workout_sessions (user_id) VALUES ($1) RETURNING id, started_at',
+      [req.user.id]
+    );
+    if (tpl) {
+      // Create-or-get each template exercise under the user's own account
+      // (unique on (user_id, lower(name)); DO UPDATE keeps RETURNING working
+      // for an existing row and preserves its original casing, muscle tags
+      // and type). Added in template order — created_at also carries the
+      // order, matching how hand-added entries render.
+      for (const name of tpl.exercises) {
+        const { rows: [ex] } = await client.query(
+          `INSERT INTO exercises (user_id, name, muscles, exercise_type)
+           SELECT $1, $2, $3, $4
+           ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = exercises.name
+           RETURNING id, name`,
+          [req.user.id, name, suggestMuscles(name), (findCatalogEntry(name) || {}).type || 'reps']
+        );
+        await client.query(
+          'INSERT INTO session_exercises (session_id, exercise_id) VALUES ($1, $2)',
+          [session.id, ex.id]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    res.json(session);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }));
 
 app.get('/api/sessions', wrap(async (req, res) => {
