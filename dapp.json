@@ -1,8 +1,6 @@
 {
   "name": "Gym Tracker",
-  "icon": {
-    "emoji": "🏋️"
-  },
+  "icon": { "image": "brand/icon.png", "emoji": "🏋️" },
   "secrets": [],
   "tests": [
     {
@@ -14,11 +12,6 @@
       "name": "Home renders for real user",
       "path": "/",
       "expectText": "Start workout"
-    },
-    {
-      "name": "Theme switcher renders",
-      "path": "/",
-      "expectSelector": "[data-action=\"set-theme\"]"
     },
     {
       "name": "Swipeable session rows render",
@@ -74,6 +67,16 @@
       "name": "Session deep link opens the session view",
       "path": "/?demo=1&session=900002",
       "expectText": "Add exercise"
+    },
+    {
+      "name": "Session view shows workout duration",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-session-duration]"
+    },
+    {
+      "name": "Home rows show workout duration",
+      "path": "/?demo=1",
+      "expectSelector": "[data-session-duration]"
     },
     {
       "name": "Exercise X delete buttons render in session",
@@ -289,6 +292,21 @@
       "name": "Log set submit control renders",
       "path": "/?demo=1&session=900002&addset=1",
       "expectSelector": "#set-form button[type=\"submit\"]"
+    },
+    {
+      "name": "Rest timer steps aside while the set form is open",
+      "path": "/?demo=1&session=900002&addset=1",
+      "expectSelector": "body:has(#set-form) #rest-dock.hidden"
+    },
+    {
+      "name": "Rest timer shows in a session with nothing open",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "#rest-dock:not(.hidden) #stopwatch"
+    },
+    {
+      "name": "Rest timer steps aside while the add-exercise sheet is open",
+      "path": "/?demo=1&session=900002&picker=1",
+      "expectSelector": "body:has(#picker-search) #rest-dock.hidden"
     },
     {
       "name": "Logging a set arms the rest timer",

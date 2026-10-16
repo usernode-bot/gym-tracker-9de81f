@@ -49,7 +49,12 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. For the same reason, `GET /api/settings`
+  treats the demo user's seeded settings row as demo-dataset-only
+  outside a `?demo=1` read — the platform's signed-in staging
+  viewer can share the demo user's id (900001), and that viewer
+  must still see the prompt. Strictly `IS_STAGING`; no-op in
+  production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -112,7 +117,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
@@ -129,6 +134,12 @@ view. All workout data is strictly private per user.
   transitions; `html.un-kb` fades it out while the keyboard is up, so
   it can't cover the field being typed into (issue #36), and a focused
   input collapses the card so its backdrop can't eat taps invisibly.
+  The dock is also hidden outright (issue #49) whenever a surface that
+  takes input is open — the set form, a note input, or any sheet —
+  per the single `restDockBlocked()` list that `renderRestDock()`
+  reads on every render; add a new form/sheet's state there. Hiding
+  never touches the timer: it keeps counting, still fires the end cue,
+  and the pill returns (collapsed) when the surface closes.
   Notes (session, entry, set) wrap as paragraphs —
   `whitespace-pre-wrap break-words`, never `truncate`.
 - **Logging a set is optimistic** (issue #43): `onSetSubmit` never
@@ -155,6 +166,7 @@ view. All workout data is strictly private per user.
   `isStaging`, which comes from the `staging` flag now returned by
   `GET /api/settings` — it writes a set, so it must never run against
   a production account. No feature is gated on that flag.
+- **Session duration** (issue #44): computed client-side by `fmtDuration(started_at, sessionLastSetAt(session))` — `started_at` to the last set's `created_at`, not a sum of rest timers. Shown as "31m" / "1h 5m" after "Workout session" in the session header and at the end of each home row's "exercises · sets" line (`<span data-session-duration>`). The home list gets `MAX(st.created_at) AS last_set_at` from `GET /api/sessions`. Under a minute (imported history records sets at the session start), negative, or no sets: nothing shown. Updates on each render (set logged/deleted), never a live tick.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,
