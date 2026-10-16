@@ -330,6 +330,50 @@ app.post('/api/sessions', wrap(async (req, res) => {
   res.json(rows[0]);
 }));
 
+// Start a new workout carrying the same exercise list as the most recent
+// workout that had exercises (entries only — no sets, no notes).
+app.post('/api/sessions/repeat', wrap(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const src = (await client.query(
+      `SELECT s.id FROM workout_sessions s
+       WHERE s.user_id = $1 AND EXISTS (SELECT 1 FROM session_exercises se WHERE se.session_id = s.id)
+       ORDER BY s.started_at DESC, s.id DESC LIMIT 1`,
+      [req.user.id]
+    )).rows[0];
+    if (!src) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No past workout to repeat' });
+    }
+    // Ownership joins up to exercises, same as the session view's order.
+    const entries = (await client.query(
+      `SELECT se.exercise_id FROM session_exercises se
+       JOIN exercises e ON e.id = se.exercise_id
+       WHERE se.session_id = $1 AND e.user_id = $2
+       ORDER BY se.created_at, se.id`,
+      [src.id, req.user.id]
+    )).rows;
+    const s = (await client.query(
+      'INSERT INTO workout_sessions (user_id) VALUES ($1) RETURNING id, started_at',
+      [req.user.id]
+    )).rows[0];
+    for (const en of entries) {
+      await client.query(
+        'INSERT INTO session_exercises (session_id, exercise_id) VALUES ($1, $2)',
+        [s.id, en.exercise_id]
+      );
+    }
+    await client.query('COMMIT');
+    res.json(s);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
 app.get('/api/sessions', wrap(async (req, res) => {
   const uid = readUserId(req);
   const { rows } = await pool.query(
