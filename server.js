@@ -50,7 +50,7 @@ const DEMO_USER_ID = 900001;
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
-const PUBLIC_API_PATHS = new Set(['/health']);
+const PUBLIC_API_PATHS = new Set(['/health', '/api/inloop-signin']);
 
 // 5mb: import files can carry a whole workout history (see /api/import limits).
 app.use(express.json({ limit: '5mb' }));
@@ -60,7 +60,21 @@ app.use(express.json({ limit: '5mb' }));
 // on load; the frontend script forwards the token via `x-usernode-token`
 // on subsequent fetches.
 app.use((req, res, next) => {
-  const token = req.query.token || req.headers['x-usernode-token'];
+  let token = req.query.token || req.headers['x-usernode-token'];
+  // Local in-loop check sessions sign in via POST /api/inloop-signin, which
+  // sets this cookie. It is the SAME throwaway token, re-verified below like
+  // any other; staging/prod captures never use it (the platform injects
+  // ?token= directly).
+  const cookieHeader = req.headers.cookie || '';
+  if (!token && cookieHeader) {
+    for (const pair of cookieHeader.split(';')) {
+      const i = pair.indexOf('=');
+      if (i > 0 && pair.slice(0, i).trim() === 'inloop-session') {
+        try { token = decodeURIComponent(pair.slice(i + 1).trim()); } catch { token = ''; }
+        break;
+      }
+    }
+  }
   if (token && USERNODE_JWT_PUBLIC_KEY) {
     try {
       const payload = jwt.verify(token, USERNODE_JWT_PUBLIC_KEY, {
@@ -83,6 +97,43 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// Staging-only local sign-in for the in-loop check runner (usernode-run-checks
+// + dapp.json's inLoopCheckAuth). Staging captures get a platform-issued
+// identity automatically; locally there is no platform to mint one, so the
+// runner posts the SAME throwaway token it loaded the app with to this
+// endpoint, which verifies it with the app's own public key and returns it
+// as a header. Everything is gated on IS_STAGING, the token is verified
+// (never trusted), and only the token itself is echoed back. Strictly a
+// no-op in production.
+app.post('/api/inloop-signin', (req, res) => {
+  if (!IS_STAGING) return res.status(404).json({ error: 'Not found' });
+  // The runner's request body is capped at 512 chars per field, and an RS256
+  // token is longer, so the token itself arrives as the value of `tokenFile`
+  // (a path to the throwaway token file used for this local run). Read and
+  // verify THAT; never trust the path beyond reading a local file.
+  let token = req.body && typeof req.body.token === 'string' ? req.body.token : '';
+  const tokenFile = req.body && typeof req.body.tokenFile === 'string' ? req.body.tokenFile : '';
+  if (tokenFile) {
+    try { token = require('fs').readFileSync(tokenFile, 'utf8').trim(); } catch { token = ''; }
+  }
+  if (!token || !USERNODE_JWT_PUBLIC_KEY) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, USERNODE_JWT_PUBLIC_KEY, {
+      algorithms: ['RS256'],
+      issuer: 'usernode',
+      audience: 'usernode:app:' + process.env.USERNODE_APP_ID,
+    });
+    if (payload.pur !== 'iframe') throw new Error('wrong purpose');
+    // The in-loop runner needs a browser session to exist after the POST, so
+    // record the verified identity in a short-lived cookie and also expose it
+    // in localStorage on the loopback origin (same thing, belt and braces).
+    res.setHeader('Set-Cookie', 'inloop-session=' + encodeURIComponent(token) + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=7200');
+    return res.json({ ok: true, token });
+  } catch {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+});
 
 // Browsers auto-request /favicon.ico with no platform token. Serve it as a
 // public, non-401 route (an SVG with the app's weightlifter glyph) so the
