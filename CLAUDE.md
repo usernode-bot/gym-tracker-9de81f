@@ -37,7 +37,22 @@ carry optional notes. Each exercise card shows a "Last time" panel
 client-side count-up rest stopwatch sits at the bottom of the session
 view. All workout data is strictly private per user.
 
+The Home screen also carries a compact **bodyweight card**: the latest
+daily weight, a 30-day sparkline, and an inline input to log today's
+weight (display unit aware; stored in kg like every other weight).
+
 ## App-specific conventions
+
+- **`bodyweight_log` is a private table too**: one row per user per
+  day (unique on `(user_id, log_date)`), upserted so re-logging a day
+  updates the value. It powers the Home bodyweight card. Staging seeds
+  30 demo days under `user_id = 900001` (80 → 78.3 kg, ids 900001+),
+  and `ensureStagingUserData` copies the same rows under a first-time
+  tester's own id with fresh ids. The `?demo=1` overlay hides the input
+  (read-only demo) and shows a note instead. The Progress hub's
+  strength-level `bodyweight_kg` setting (`user_settings`) is separate;
+  logging a weight on Home also updates that reference so the levels
+  stay in sync with the latest weight.
 
 - **All five workout tables are `staging:private`**: `exercises`,
   `workout_sessions`, `session_exercises`, `sets`, `user_settings`.
