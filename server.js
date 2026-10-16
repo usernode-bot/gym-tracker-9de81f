@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
-const { CATALOG, MUSCLE_SLUGS, findCatalogEntry } = require('./exercise-catalog');
+const { CATALOG, MUSCLE_SLUGS, findCatalogEntry, volumeFactorFor } = require('./exercise-catalog');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -54,6 +54,16 @@ const PUBLIC_API_PATHS = new Set(['/health']);
 
 // 5mb: import files can carry a whole workout history (see /api/import limits).
 app.use(express.json({ limit: '5mb' }));
+
+// Read "now" through the platform so a staging preview opened at a chosen
+// moment (the ?un-now / x-usernode-now header) sees that week, not the wall
+// clock. Production ignores it; only the value differs, not the code path.
+const PREVIEW_NOW = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+function requestNow(req) {
+  const raw = IS_STAGING ? (req.headers['x-usernode-now'] || req.query['un-now']) : null;
+  return typeof raw === 'string' && PREVIEW_NOW.test(raw) ? new Date(raw) : new Date();
+}
+app.use((req, _res, next) => { req.now = requestNow(req); next(); });
 
 // Verify platform-issued JWT if one was passed, then enforce auth on
 // anything not explicitly marked public. The iframe adds `?token=…`
@@ -470,7 +480,9 @@ app.get('/api/exercises', wrap(async (req, res) => {
 // autocomplete first while free-form custom names stay allowed.
 app.get('/api/exercise-catalog', wrap(async (_req, res) => {
   res.set('Cache-Control', 'private, max-age=3600');
-  res.json({ exercises: CATALOG });
+  // volumeFactor is surfaced (defaulted to 1) so the client can derive a
+  // volume target for a logged exercise without re-encoding the metric.
+  res.json({ exercises: CATALOG.map((e) => ({ ...e, volumeFactor: Number.isFinite(e.volumeFactor) ? e.volumeFactor : 1 })) });
 }));
 
 app.post('/api/exercises', wrap(async (req, res) => {
@@ -618,6 +630,107 @@ app.get('/api/muscles/:muscle/history', wrap(async (req, res) => {
 // 84 days = the client's 12-week strength expiry). All set shapes are
 // included: the strength rollup self-filters (setE1rm ignores time /
 // zero-weight rows) while the frequency rollup counts every set.
+// Weekly lifting volume vs a weekly target, for the home dashboard's
+// bottom section. `volume_kg` is the literal total weight lifted in the
+// response's own week (reps x weight, kg); completed sessions are the
+// Monday-started calendar weeks within the window. `factor_volume_kg` is
+// the catalog-metric mass (reps x weight x the exercise's volumeFactor from
+// the exercise catalog; a weight-0 bodyweight set counts
+// reps x the user's bodyweight x the factor, i.e. the catalog's volume
+// metric combined with the weight history). The target is derived from the
+// catalog factor as well: `sum(factor_volume_kg of the last 4 complete
+// weeks) / 4`, so an unweighted bodyweight programme still cross-checks its
+// trend. A brand-new user with no history falls back to a small nominal
+// target (NOMINAL_WEEKLY_TARGET_KG) so the section is never empty.
+app.get('/api/volume/weekly-target', wrap(async (req, res) => {
+  const uid = readUserId(req);
+  const { rows } = await pool.query(
+    `SELECT s.id AS session_id, s.started_at, e.name AS exercise_name,
+            st.set_type, st.reps, st.weight
+     FROM sets st
+     JOIN session_exercises se ON se.id = st.session_exercise_id
+     JOIN exercises e ON e.id = se.exercise_id
+     JOIN workout_sessions s ON s.id = se.session_id
+     WHERE s.user_id = $1 AND e.user_id = $1
+       AND s.started_at >= NOW() - INTERVAL '84 days'
+     ORDER BY s.started_at`,
+    [uid]
+  );
+
+  // Bodyweight (kg) is the weight history this derivation reads: a weight-0
+  // reps set is bodyweight work, and its mass is reps x bodyweight x factor.
+  const bwRow = (await pool.query(
+    'SELECT bodyweight_kg FROM user_settings WHERE user_id = $1',
+    [uid]
+  )).rows[0];
+  const bwKg = bwRow && bwRow.bodyweight_kg !== null ? parseFloat(bwRow.bodyweight_kg) : 0;
+
+  function weekStart(t) {
+    const d = new Date(t);
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); // back to Monday
+    return d.getTime();
+  }
+  const thisWeek = weekStart(req.now.getTime());
+
+  const buckets = new Map(); // weekStartMs -> { volume, factorVolume, sessions: Map(id->{volume, factorVolume, started_at, name}) }
+  for (const r of rows) {
+    const w = weekStart(new Date(r.started_at).getTime());
+    let b = buckets.get(w);
+    if (!b) { b = { volume: 0, factorVolume: 0, sessions: new Map() }; buckets.set(w, b); }
+    const reps = r.set_type === 'reps' ? (r.reps || 0) : 0;
+    const weight = r.set_type === 'reps' ? (parseFloat(r.weight) || 0) : 0;
+    const factor = volumeFactorFor(r.exercise_name);
+    const volume = reps * weight;
+    const factorVolume = reps * (weight > 0 ? weight : bwKg) * factor;
+    b.volume += volume;
+    b.factorVolume += factorVolume;
+    let sess = b.sessions.get(r.session_id);
+    if (!sess) { sess = { volume: 0, factorVolume: 0, started_at: r.started_at, name: null }; b.sessions.set(r.session_id, sess); }
+    sess.volume += volume;
+    sess.factorVolume += factorVolume;
+    if (!sess.name) sess.name = r.exercise_name;
+  }
+
+  // The last 4 complete weeks (excluding the in-progress current week) set
+  // the target; fewer than 4 fall back to whatever weeks exist.
+  const completed = [...buckets.keys()].filter((w) => w < thisWeek).sort((a, b) => b - a);
+  const recent = completed.slice(0, 4);
+  const recentAvg = recent.length ? recent.reduce((a, w) => a + buckets.get(w).factorVolume, 0) / recent.length : 0;
+
+  const cur = buckets.get(thisWeek) || { volume: 0, factorVolume: 0, sessions: new Map() };
+  const recentSessions = recent.reduce((a, w) => a + buckets.get(w).sessions.size, 0);
+  const nominal = 12000; // kg of volume mass, a modest first-week target
+  const target = recentAvg > 0
+    ? Math.round(recentAvg)
+    : (recentSessions === 0 ? nominal : Math.max(nominal, Math.round(recentAvg)));
+  // Distinguish a real target (from history) from the nominal first-week one.
+  const hasHistory = recentSessions > 0;
+
+  const currentSessions = [...cur.sessions.entries()]
+    .map(([id, s]) => ({ id, started_at: s.started_at, volume_kg: Math.round(s.volume), factor_volume_kg: Math.round(s.factorVolume), name: s.name }))
+    .sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+
+  res.json({
+    unit: 'kg',
+    week_start: new Date(thisWeek).toISOString(),
+    volume_kg: Math.round(cur.volume),
+    factor_volume_kg: Math.round(cur.factorVolume),
+    target_kg: target,
+    // target is the factor-based average of the last 4 complete weeks
+    // (the catalog metric), so compare factor_volume_kg against it;
+    // volume_kg is the same weeks' literal weight lifted, for reference.
+    has_history: hasHistory,
+    is_nominal_target: !hasHistory,
+    recent_weeks: recent.map((w) => ({
+      week_start: new Date(w).toISOString(),
+      volume_kg: Math.round(buckets.get(w).volume),
+      factor_volume_kg: Math.round(buckets.get(w).factorVolume),
+    })),
+    sessions: currentSessions,
+  });
+}));
+
 app.get('/api/muscles/summary', wrap(async (req, res) => {
   const uid = readUserId(req);
   const { rows } = await pool.query(

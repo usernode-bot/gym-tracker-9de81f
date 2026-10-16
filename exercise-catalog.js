@@ -20,7 +20,14 @@
 // imports this list for its own validation and keyword rules).
 const MUSCLE_SLUGS = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'quads', 'hamstrings', 'glutes', 'calves', 'core', 'forearms'];
 
-// Entry shape: { name, type: 'reps'|'time', muscles: [slug...], aliases?: [string...] }
+// Entry shape: { name, type: 'reps'|'time', muscles: [slug...], aliases?: [string...], volumeFactor?: number }
+//
+// `volumeFactor` is the movement's volume metric: roughly how much of the
+// body's mass it moves, scaled so a plain two-hand free-weight lift is 1.
+// It converts a reps set into "volume mass" (reps x weight x factor) and, on
+// a bodyweight set (weight 0), counts a share of bodyweight so unweighted
+// work still contributes. It powers the weekly volume vs targets section.
+// Entries without it default to 1 (see volumeFactorFor).
 const CATALOG = [
   // ---------- Chest ----------
   { name: 'Barbell Bench Press', type: 'reps', muscles: ['chest', 'triceps', 'shoulders'], aliases: ['bench press', 'bench', 'flat bench press', 'bench press band only', 'banded bench press'] },
@@ -31,17 +38,17 @@ const CATALOG = [
   { name: 'Pec Deck Fly', type: 'reps', muscles: ['chest'], aliases: ['butterfly', 'butterfly pec deck', 'pec deck', 'pec dec', 'machine fly', 'chest fly machine'] },
   { name: 'Dumbbell Fly', type: 'reps', muscles: ['chest'], aliases: ['dumbbell flye', 'chest fly', 'db fly'] },
   { name: 'Cable Fly', type: 'reps', muscles: ['chest'], aliases: ['cable crossover', 'cable chest fly'] },
-  { name: 'Push-Up', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['pushup', 'press up'] },
-  { name: 'Incline Push-Up', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['incline pushup'] },
-  { name: 'Close-Grip Incline Push-Up', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['close incline push up', 'close grip incline pushup'] },
-  { name: 'Dips', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['dip', 'weighted dips', 'chest dips', 'tricep dips', 'parallel bar dips'] },
+  { name: 'Push-Up', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['pushup', 'press up'], volumeFactor: 0.66 },
+  { name: 'Incline Push-Up', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['incline pushup'], volumeFactor: 0.5 },
+  { name: 'Close-Grip Incline Push-Up', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['close incline push up', 'close grip incline pushup'], volumeFactor: 0.5 },
+  { name: 'Dips', type: 'reps', muscles: ['chest', 'triceps'], aliases: ['dip', 'weighted dips', 'chest dips', 'tricep dips', 'parallel bar dips'], volumeFactor: 0.9 },
 
   // ---------- Back ----------
-  { name: 'Pull-Up', type: 'reps', muscles: ['back', 'biceps'], aliases: ['pullup', 'pull up banded', 'banded pull up', 'assisted pull up', 'weighted pull up'] },
-  { name: 'Chin-Up', type: 'reps', muscles: ['back', 'biceps'], aliases: ['chinup'] },
-  { name: 'Pull-Up Negatives', type: 'reps', muscles: ['back', 'biceps'], aliases: ['negative pull ups', 'eccentric pull up'] },
+  { name: 'Pull-Up', type: 'reps', muscles: ['back', 'biceps'], aliases: ['pullup', 'pull up banded', 'banded pull up', 'assisted pull up', 'weighted pull up'], volumeFactor: 0.95 },
+  { name: 'Chin-Up', type: 'reps', muscles: ['back', 'biceps'], aliases: ['chinup'], volumeFactor: 0.95 },
+  { name: 'Pull-Up Negatives', type: 'reps', muscles: ['back', 'biceps'], aliases: ['negative pull ups', 'eccentric pull up'], volumeFactor: 0.6 },
   { name: 'Lat Pulldown', type: 'reps', muscles: ['back', 'biceps'], aliases: ['lat pulldown machine', 'cable pulldown', 'pulldown', 'lat pull down', 'wide grip pulldown'] },
-  { name: 'One-Arm Lat Pulldown', type: 'reps', muscles: ['back', 'biceps'], aliases: ['one arm lat machine pull', 'single arm lat pulldown', 'single arm pulldown'] },
+  { name: 'One-Arm Lat Pulldown', type: 'reps', muscles: ['back', 'biceps'], aliases: ['one arm lat machine pull', 'single arm lat pulldown', 'single arm pulldown'], volumeFactor: 0.5 },
   { name: 'Barbell Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['bent over row', 'bent over barbell row', 'bb row'] },
   { name: 'Underhand Barbell Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['underhand row', 'yates row', 'reverse grip barbell row'] },
   { name: 'Pendlay Row', type: 'reps', muscles: ['back', 'biceps'] },
@@ -50,13 +57,13 @@ const CATALOG = [
   { name: 'Chest-Supported Dumbbell Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['dumbbell stomach row', 'stomach row', 'seal row', 'prone dumbbell row', 'incline dumbbell row', 'chest supported row'] },
   { name: 'Seated Cable Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['seated pulley row', 'pulley row', 'cable row', 'seated row', 'low row'] },
   { name: 'Wide-Grip Seated Cable Row', type: 'reps', muscles: ['back'], aliases: ['wide pulley row', 'wide grip cable row', 'wide row'] },
-  { name: 'One-Arm Seated Cable Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['seated one arm cord pull', 'single arm cable row', 'one arm cable row'] },
+  { name: 'One-Arm Seated Cable Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['seated one arm cord pull', 'single arm cable row', 'one arm cable row'], volumeFactor: 0.5 },
   { name: 'Machine Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['seated machine row', 'hammer strength row'] },
-  { name: 'Inverted Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['bodyweight row', 'australian pull up'] },
+  { name: 'Inverted Row', type: 'reps', muscles: ['back', 'biceps'], aliases: ['bodyweight row', 'australian pull up'], volumeFactor: 0.6 },
   { name: 'Straight-Arm Pulldown', type: 'reps', muscles: ['back'], aliases: ['cable pullover', 'straight arm cable pulldown'] },
   { name: 'Barbell Shrug', type: 'reps', muscles: ['back', 'forearms'], aliases: ['shrug', 'shrugs'] },
   { name: 'Dumbbell Shrug', type: 'reps', muscles: ['back', 'forearms'] },
-  { name: 'Back Extension', type: 'reps', muscles: ['back', 'glutes', 'hamstrings'], aliases: ['hyperextension', '45 degree back extension'] },
+  { name: 'Back Extension', type: 'reps', muscles: ['back', 'glutes', 'hamstrings'], aliases: ['hyperextension', '45 degree back extension'], volumeFactor: 0.6 },
   { name: 'Good Morning', type: 'reps', muscles: ['hamstrings', 'glutes', 'back'] },
   { name: 'Deadlift', type: 'reps', muscles: ['hamstrings', 'glutes', 'back'], aliases: ['barbell deadlift', 'conventional deadlift'] },
   { name: 'Romanian Deadlift', type: 'reps', muscles: ['hamstrings', 'glutes', 'back'], aliases: ['rdl', 'stiff leg deadlift', 'stiff legged deadlift'] },
@@ -116,9 +123,9 @@ const CATALOG = [
   { name: 'Step-Up', type: 'reps', muscles: ['quads', 'glutes'], aliases: ['dumbbell step up', 'box step up'] },
   { name: 'Leg Extension', type: 'reps', muscles: ['quads'], aliases: ['leg extension machine'] },
   { name: 'Leg Curl', type: 'reps', muscles: ['hamstrings'], aliases: ['lying leg curl', 'seated leg curl', 'hamstring curl', 'leg curl machine'] },
-  { name: 'Nordic Hamstring Curl', type: 'reps', muscles: ['hamstrings'], aliases: ['nordic curl'] },
+  { name: 'Nordic Hamstring Curl', type: 'reps', muscles: ['hamstrings'], aliases: ['nordic curl'], volumeFactor: 0.6 },
   { name: 'Hip Thrust', type: 'reps', muscles: ['glutes', 'hamstrings'], aliases: ['barbell hip thrust'] },
-  { name: 'Glute Bridge', type: 'reps', muscles: ['glutes', 'hamstrings'] },
+  { name: 'Glute Bridge', type: 'reps', muscles: ['glutes', 'hamstrings'], volumeFactor: 0.7 },
   { name: 'Hip Abduction Machine', type: 'reps', muscles: ['glutes'], aliases: ['hip abduction', 'abductor machine'] },
   // No adductor slug exists — leave untagged rather than mis-tag.
   { name: 'Hip Adduction Machine', type: 'reps', muscles: [], aliases: ['hip adduction', 'adductor machine'] },
@@ -127,17 +134,17 @@ const CATALOG = [
   { name: 'Barbell Clean', type: 'reps', muscles: ['back', 'glutes', 'hamstrings', 'quads'], aliases: ['clean', 'power clean', 'hang clean'] },
   { name: 'Snatch', type: 'reps', muscles: ['back', 'glutes', 'hamstrings', 'shoulders'], aliases: ['power snatch'] },
   { name: 'Kettlebell Swing', type: 'reps', muscles: ['glutes', 'hamstrings', 'back'], aliases: ['kb swing'] },
-  { name: 'Box Jump', type: 'reps', muscles: ['quads', 'glutes', 'calves'] },
+  { name: 'Box Jump', type: 'reps', muscles: ['quads', 'glutes', 'calves'], volumeFactor: 0.5 },
   { name: 'Wall Sit', type: 'time', muscles: ['quads'], aliases: ['wall squat hold'] },
 
   // ---------- Core ----------
   { name: 'Plank', type: 'time', muscles: ['core'], aliases: ['plank hold', 'front plank', 'forearm plank'] },
   { name: 'Side Plank', type: 'time', muscles: ['core'], aliases: ['side to side plank'] },
-  { name: 'Crunch', type: 'reps', muscles: ['core'], aliases: ['crunches'] },
+  { name: 'Crunch', type: 'reps', muscles: ['core'], aliases: ['crunches'], volumeFactor: 0.4 },
   { name: 'Cable Crunch', type: 'reps', muscles: ['core'], aliases: ['kneeling cable crunch', 'rope crunch'] },
   { name: 'Sit-Up', type: 'reps', muscles: ['core'], aliases: ['situp', 'sit ups'] },
   { name: 'Leg Raise', type: 'reps', muscles: ['core'], aliases: ['leg raises', 'lying leg raise', 'leg raises slow negative', 'leg raise core thing'] },
-  { name: 'Hanging Leg Raise', type: 'reps', muscles: ['core'], aliases: ['hanging knee raise', 'knee raise'] },
+  { name: 'Hanging Leg Raise', type: 'reps', muscles: ['core'], aliases: ['hanging knee raise', 'knee raise'], volumeFactor: 0.4 },
   { name: 'Russian Twist', type: 'reps', muscles: ['core'] },
   { name: 'Ab Wheel Rollout', type: 'reps', muscles: ['core'], aliases: ['ab rollout', 'ab wheel'] },
   { name: 'Mountain Climbers', type: 'time', muscles: ['core'], aliases: ['mountain climber'] },
@@ -145,7 +152,7 @@ const CATALOG = [
 
   // ---------- Forearms / grip ----------
   { name: 'Dead Hang', type: 'time', muscles: ['forearms', 'back'], aliases: ['bar hang'] },
-  { name: "Farmer's Carry", type: 'time', muscles: ['forearms', 'core'], aliases: ['farmers carry', 'farmer walk', 'farmers walk'] },
+  { name: "Farmer's Carry", type: 'time', muscles: ['forearms', 'core'], aliases: ['farmers carry', 'farmer walk', 'farmers walk'], volumeFactor: 1.6 },
   { name: 'Wrist Curl', type: 'reps', muscles: ['forearms'], aliases: ['barbell wrist curl', 'dumbbell wrist curl'] },
   { name: 'Reverse Wrist Curl', type: 'reps', muscles: ['forearms'], aliases: ['wrist extension'] },
 
@@ -200,4 +207,13 @@ function findCatalogEntry(name) {
   return byKey.get(normalizeName(name)) || null;
 }
 
-module.exports = { CATALOG, MUSCLE_SLUGS, findCatalogEntry, normalizeName };
+// The volume metric for an exercise name: its catalog `volumeFactor`, or 1
+// when it is not in the catalog or has no explicit factor (every unlisted
+// free-form exercise and every plain two-hand lift). Used server-side to
+// weight a reps set's volume mass.
+function volumeFactorFor(name) {
+  const e = findCatalogEntry(name);
+  return e && Number.isFinite(e.volumeFactor) ? e.volumeFactor : 1;
+}
+
+module.exports = { CATALOG, MUSCLE_SLUGS, findCatalogEntry, normalizeName, volumeFactorFor };
