@@ -188,17 +188,14 @@
     }
   </style>
 
-  <!-- Theme bootstrap: apply the stored preference (light/dark/system,
-       default system) before first paint to avoid a wrong-theme flash. -->
+  <!-- Theme bootstrap: follow the platform theme (window.usernode.theme,
+       seeded from ?un-theme= by the bridge script above) before first paint
+       to avoid a wrong-theme flash. Standalone, fall back to the OS
+       light/dark preference. -->
   <script>
   (function () {
-    var pref = 'system';
-    try {
-      var stored = localStorage.getItem('gym-tracker-theme');
-      if (stored === 'light' || stored === 'dark' || stored === 'system') pref = stored;
-    } catch (_) {}
-    var dark = pref === 'dark' ||
-      (pref === 'system' && window.matchMedia &&
+    var dark = !!(window.usernode && window.usernode.theme === 'dark') ||
+      (!(window.usernode && window.usernode.theme) && window.matchMedia &&
        window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.classList.toggle('dark', dark);
   })();
@@ -259,6 +256,10 @@
     let bwEditor = null;      // truthy while the bodyweight sheet is open
     let weightUnit = 'kg';    // display unit ('kg' | 'lbs'); weights are always stored in kg
     let bodyweightKg = null;  // bodyweight in kg (null = unset; strength levels hidden)
+    // The read-only ?demo=1 overlay rates the demo data's strength levels
+    // against this fixed bodyweight instead of the viewer's own settings
+    // (the demo user is seeded with no user_settings row — see server.js).
+    const DEMO_BODYWEIGHT_KG = 80;
     let stopwatchStart = null; // epoch ms of last logged set / manual reset, or null (idle)
     let restTargetSec = 120;   // rest target in seconds (30..600, multiple of 30) — set below from localStorage
     let restExpanded = false;  // the expanded rest control card is open
@@ -283,35 +284,25 @@
     function hasKit() { return !!window.unNative; }
 
     // ---------- theme ----------
-    const THEME_KEY = 'gym-tracker-theme';
+    // Follow the platform's theme (forwarded by the usernode bridge as
+    // window.usernode.theme: 'light' | 'dark' | null). Standalone the value
+    // stays null and the device's light/dark preference decides instead.
+    // The bridge pushes usernode:theme-changed on every platform flip; the
+    // OS media query is also followed live for the standalone fallback.
     const themeMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-    function getThemePref() {
-      try {
-        const v = localStorage.getItem(THEME_KEY);
-        if (v === 'light' || v === 'dark' || v === 'system') return v;
-      } catch (_) {}
-      return 'system';
-    }
-    function setThemePref(v) {
-      try {
-        if (v === 'system') localStorage.removeItem(THEME_KEY);
-        else localStorage.setItem(THEME_KEY, v);
-      } catch (_) {}
-    }
     function applyTheme() {
-      const pref = getThemePref();
-      const dark = pref === 'dark' || (pref === 'system' && themeMq && themeMq.matches);
+      const t = (window.usernode && window.usernode.theme) || null;
+      const dark = t === 'dark' || (!t && themeMq && themeMq.matches);
       document.documentElement.classList.toggle('dark', dark);
     }
-    // Follow the OS live, but only while the user hasn't set an explicit choice.
+    window.addEventListener('usernode:theme-changed', applyTheme);
     if (themeMq) {
-      const onSystemChange = () => { if (getThemePref() === 'system') applyTheme(); };
-      if (themeMq.addEventListener) themeMq.addEventListener('change', onSystemChange);
-      else if (themeMq.addListener) themeMq.addListener(onSystemChange);
+      if (themeMq.addEventListener) themeMq.addEventListener('change', applyTheme);
+      else if (themeMq.addListener) themeMq.addListener(applyTheme);
     }
 
     // ---------- rest target duration (client-side only, per device) ----------
-    // Same shape as the theme preference: localStorage, validated on read,
+    // localStorage, validated on read,
     // try/catch on both sides so a blocked-cookies context can't throw (a
     // console error there would fail every proposal check on the route).
     // Deliberately NOT in user_settings — the rest timer has no server state.
@@ -492,14 +483,6 @@
       return { level, label: LEVEL_LABELS[level] };
     }
 
-    function themeSwitcherHtml() {
-      const pref = getThemePref();
-      const opt = (t, label, icon) => `<button type="button" data-action="set-theme" data-theme="${t}" title="${label}" aria-label="${label}" aria-pressed="${pref === t}" class="px-2 py-1 text-sm leading-none transition-colors ${pref === t ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${icon}</button>`;
-      return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">
-        ${opt('light', 'Light', '☀')}${opt('dark', 'Dark', '☾')}${opt('system', 'System', '◐')}
-      </div>`;
-    }
-
     function unitSwitcherHtml() {
       const opt = (u) => `<button type="button" data-action="set-unit" data-unit="${u}" title="Show weights in ${u}" aria-pressed="${weightUnit === u}" class="px-2 py-1 text-xs leading-none transition-colors ${weightUnit === u ? 'bg-violet-600 text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'}">${u}</button>`;
       return `<div class="flex rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700">${opt('kg')}${opt('lbs')}</div>`;
@@ -563,7 +546,7 @@
         ? `<div class="un-group">${rows}</div>`
         : `<div class="space-y-2">${rows}</div>`;
       return `
-        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() + themeSwitcherHtml() })}
+        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-white shadow-lg shadow-violet-600/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
         ${list}
@@ -2893,11 +2876,6 @@
         case 'rest-step':
           commitRestTarget(restTargetSec + parseInt(el.dataset.delta || '0', 10));
           break;
-        case 'set-theme':
-          setThemePref(el.dataset.theme);
-          applyTheme();
-          render();
-          break;
         case 'set-unit': {
           const u = el.dataset.unit;
           if (u === weightUnit) break;
@@ -2954,6 +2932,12 @@
         isStaging = !!st.staging;
         weightUnit = st.weight_unit === 'lbs' ? 'lbs' : 'kg';
         bodyweightKg = st.bodyweight_kg !== null && st.bodyweight_kg !== undefined ? parseFloat(st.bodyweight_kg) || null : null;
+        // The demo overlay rates its strength levels against a fixed demo
+        // bodyweight (the seeded demo data is designed around 80 kg), not
+        // the viewer's own settings — the demo user has no user_settings
+        // row, so the first-run bodyweight prompt stays reachable for the
+        // signed-in preview viewer.
+        if (demo) bodyweightKg = DEMO_BODYWEIGHT_KG;
       }
       catch (_) {} // default to kg / no bodyweight — never block the app on the setting
       // ?session=<id> deep-links straight into that session's view, and

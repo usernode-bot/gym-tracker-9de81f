@@ -1368,16 +1368,14 @@ async function seedStagingDemo() {
     VALUES ${freqSetRows.join(',\n      ')}
     ON CONFLICT (id) DO NOTHING
   `);
-  await pool.query(`
-    INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
-    ON CONFLICT (user_id) DO NOTHING
-  `);
-  // Demo bodyweight for the strength levels: like the demo muscle tags above,
-  // long-lived staging DBs already have the settings row (insert skipped), so
-  // backfill idempotently without clobbering a value that's already set.
-  await pool.query(
-    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
-  );
+  // No user_settings row for the demo user: the preview checks sign in AS
+  // this viewer (staging-demo-viewer, id 900001), and the first-run "Set
+  // your bodyweight" prompt — and its dapp.json check — need their own
+  // settings to be empty. The demo overlay's strength levels instead use a
+  // fixed demo bodyweight in the client (DEMO_BODYWEIGHT_KG in index.html).
+  // Delete rather than skip so a long-lived staging DB that still carries
+  // the old seeded row clears it too; a fresh one never has it.
+  await pool.query(`DELETE FROM user_settings WHERE user_id = 900001`);
 }
 
 async function start() {

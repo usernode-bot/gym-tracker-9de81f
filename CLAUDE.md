@@ -49,7 +49,12 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. The demo user itself is also seeded with **no**
+  `user_settings` row (the seed deletes any leftover — the proposal
+  checks sign in as that viewer); the `?demo=1` overlay's strength
+  levels use a fixed 80 kg demo bodyweight in the client
+  (`DEMO_BODYWEIGHT_KG`), not the viewer's settings. Strictly
+  `IS_STAGING`; no-op in production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
