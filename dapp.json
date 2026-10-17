@@ -317,6 +317,36 @@
       "name": "Latest-session deep link opens a workout",
       "path": "/?session=latest",
       "expectText": "Add exercise"
+    },
+    {
+      "name": "Empty reps shows a field error",
+      "path": "/?demo=1&session=900002&addset=1&invalidset=reps",
+      "expectText": "Enter reps"
+    },
+    {
+      "name": "Reps error is marked on the field",
+      "path": "/?demo=1&session=900002&addset=1&invalidset=reps",
+      "expectSelector": "[data-form-error=\"reps\"]"
+    },
+    {
+      "name": "Empty weight shows a field error",
+      "path": "/?demo=1&session=900002&addset=1&invalidset=weight",
+      "expectText": "Enter weight"
+    },
+    {
+      "name": "Weight error is marked on the field",
+      "path": "/?demo=1&session=900002&addset=1&invalidset=weight",
+      "expectSelector": "[data-form-error=\"weight\"]"
+    },
+    {
+      "name": "Empty duration shows a field error",
+      "path": "/?demo=1&session=900002&addset=1&invalidset=time",
+      "expectText": "Enter duration"
+    },
+    {
+      "name": "Duration error is marked on the field",
+      "path": "/?demo=1&session=900002&addset=1&invalidset=time",
+      "expectSelector": "[data-form-error=\"duration\"]"
     }
   ],
   "admins": [
