@@ -299,6 +299,11 @@
       "expectSelector": "#rest-dock:not(.hidden) #stopwatch"
     },
     {
+      "name": "Rest timer is idle on home",
+      "path": "/?demo=1",
+      "expectSelector": "#rest-dock.hidden #stopwatch[data-armed=\"0\"]"
+    },
+    {
       "name": "Rest timer steps aside while the add-exercise sheet is open",
       "path": "/?demo=1&session=900002&picker=1",
       "expectSelector": "body:has(#picker-search) #rest-dock.hidden"
