@@ -167,6 +167,16 @@ view. All workout data is strictly private per user.
   `GET /api/settings` — it writes a set, so it must never run against
   a production account. No feature is gated on that flag.
 - **Session duration** (issue #44): computed client-side by `fmtDuration(started_at, sessionLastSetAt(session))` — `started_at` to the last set's `created_at`, not a sum of rest timers. Shown as "31m" / "1h 5m" after "Workout session" in the session header and at the end of each home row's "exercises · sets" line (`<span data-session-duration>`). The home list gets `MAX(st.created_at) AS last_set_at` from `GET /api/sessions`. Under a minute (imported history records sets at the session start), negative, or no sets: nothing shown. Updates on each render (set logged/deleted), never a live tick.
+- **Set-form field validation is client-only** (issue #85): `validateSetDraft`
+  in `public/index.html` mirrors the ranges `buildSetValues` enforces in
+  server.js (reps a whole number 1–9999, weight 0–99999 in the display unit,
+  duration 1–86400 s via `parseDur`) and drives a red border plus an inline
+  message under the offending field. Errors live in `openForm.fieldErrors`
+  (shown only after a field is left with content, or on submit via
+  `onSetSubmit`'s fallback re-run); live updates patch the DOM in place,
+  never `render()`. Save/connection failures still use the shared
+  `openForm.error` line. `&badset=1` (with `&logset=1`) prefills an invalid
+  value and submits — nothing is written — for the dapp.json checks.
 - **JSON import/export** (`GET /api/export`, `POST /api/import`):
   format `gym-tracker-export` version 1 — portable, no DB ids,
   exercises referenced by name. Session objects carry `started_at`,

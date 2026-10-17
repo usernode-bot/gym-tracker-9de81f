@@ -409,7 +409,11 @@
     }
 
     // ---------- rendering ----------
-    const inp = 'bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-violet-500';
+    // The two border palettes a checked set-form field can wear; render and
+    // the live in-place patch (applyFieldError) swap exactly these tokens.
+    const INP_BORDER = 'border-zinc-300 dark:border-zinc-700 focus:border-violet-500';
+    const INP_BORDER_BAD = 'border-red-500 dark:border-red-400 focus:border-red-500 dark:focus:border-red-400';
+    const inp = 'bg-white dark:bg-zinc-900 border ' + INP_BORDER + ' rounded-lg px-2.5 py-1.5 text-sm outline-none';
 
     // ---------- progress / muscle constants ----------
     const MUSCLE_LABELS = { chest: 'Chest', back: 'Back', shoulders: 'Shoulders', biceps: 'Biceps', triceps: 'Triceps', quads: 'Quads', hamstrings: 'Hamstrings', glutes: 'Glutes', calves: 'Calves', core: 'Core', forearms: 'Forearms' };
@@ -567,17 +571,24 @@
       // No type toggle here: the fields' shape is fixed by the exercise's
       // type (or, when editing a legacy mismatched set, by the set's own).
       const d = openForm.draft;
+      // Each checked field sits in a column with its error line under it. The
+      // line is always emitted (hidden when clean) so the live checks only
+      // ever toggle it, and the border classes come from the same constants
+      // applyFieldError swaps.
+      const fieldCol = (name, inner) => `<div class="w-1/2 min-w-0">${inner}<div data-field-error="${name}"${openForm.fieldErrors && openForm.fieldErrors[name] ? '' : ' hidden'} class="text-red-600 dark:text-red-400 text-xs mt-1">${esc((openForm.fieldErrors && openForm.fieldErrors[name]) || '')}</div></div>`;
+      const inpCls = (name) => (openForm.fieldErrors && openForm.fieldErrors[name] ? inp.replace(INP_BORDER, INP_BORDER_BAD) : inp);
+      const inpAria = (name) => (openForm.fieldErrors && openForm.fieldErrors[name] ? ' aria-invalid="true"' : '');
       const fields = d.type === 'reps'
         ? `<div class="flex gap-2 mt-2">
-             <input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps" class="${inp} w-1/2 min-w-0">
-             <div class="relative w-1/2 min-w-0">
-               <input name="weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(d.weight)}" placeholder="weight (${weightUnit})" class="${inp} w-full pr-9">
+             ${fieldCol('reps', `<input name="reps" type="number" min="1" step="1" inputmode="numeric" value="${esc(d.reps)}" placeholder="reps"${inpAria('reps')} class="${inpCls('reps')} w-full">`)}
+             ${fieldCol('weight', `<div class="relative">
+               <input name="weight" type="number" min="0" step="any" inputmode="decimal" value="${esc(d.weight)}" placeholder="weight (${weightUnit})"${inpAria('weight')} class="${inpCls('weight')} w-full pr-9">
                <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500 pointer-events-none">${weightUnit}</span>
-             </div>
+             </div>`)}
            </div>`
         : `<div class="flex gap-2 mt-2">
-             <input name="duration" value="${esc(d.duration)}" placeholder="mm:ss or sec" autocomplete="off" class="${inp} w-1/2 min-w-0">
-             <input name="effort" value="${esc(d.effort)}" placeholder="effort (level 8…)" maxlength="120" autocomplete="off" class="${inp} w-1/2 min-w-0">
+             ${fieldCol('duration', `<input name="duration" value="${esc(d.duration)}" placeholder="mm:ss or sec" autocomplete="off"${inpAria('duration')} class="${inpCls('duration')} w-full">`)}
+             <div class="w-1/2 min-w-0"><input name="effort" value="${esc(d.effort)}" placeholder="effort (level 8…)" maxlength="120" autocomplete="off" class="${inp} w-full"></div>
            </div>`;
       // Side applies to both shapes; the drop toggle only makes sense once the
       // entry has a set to drop from (or when unflagging an existing drop set).
@@ -1567,6 +1578,10 @@
       const form = document.getElementById('set-form');
       if (form) {
         form.addEventListener('submit', onSetSubmit);
+        // Per-field validation: input keeps the draft current and rechecks
+        // fields already checked once; focusout is what first arms one.
+        form.addEventListener('input', onSetFieldCheck);
+        form.addEventListener('focusout', onSetFieldCheck);
         if (takeFocus('set-form')) {
           // Auto-focus only a blank form — focusing a pre-filled one pops the
           // mobile keyboard over values the user may just want to log as-is.
@@ -1893,6 +1908,71 @@
       return d.weightKg != null && n === kgToUnitNum(d.weightKg) ? d.weightKg : unitToKg(n);
     }
 
+    // Client-side mirror of the ranges buildSetValues enforces server-side
+    // (server.js), so a value that could never save is caught before the
+    // optimistic save ships it. Pure: returns message strings keyed by the
+    // field that has them, only for the fields relevant to the draft's type.
+    // `bad` marks fields whose number input reported validity.badInput (text
+    // a number field cannot read, like a lone "-") — those count as invalid
+    // non-empty values, not as empty. Weight is checked in the display unit;
+    // 99999 of it converts well under the server's kg cap.
+    function validateSetDraft(d, bad) {
+      bad = bad || {};
+      const errs = {};
+      if (d.type === 'reps') {
+        const r = String(d.reps).trim();
+        if (r === '' && !bad.reps) errs.reps = 'Enter reps';
+        else if (r === '' || !Number.isInteger(Number(r)) || Number(r) < 1 || Number(r) > 9999) errs.reps = 'Reps must be a whole number from 1 to 9999';
+        const w = String(d.weight).trim();
+        if (w === '' && !bad.weight) errs.weight = 'Enter weight (0 for bodyweight)';
+        else if (w === '' || !Number.isFinite(Number(w)) || Number(w) < 0 || Number(w) > 99999) errs.weight = 'Weight must be a number from 0 to 99999';
+      } else {
+        const dur = parseDur(String(d.duration).trim());
+        if (Number.isNaN(dur)) errs.duration = 'Enter duration as seconds or mm:ss';
+        else if (dur < 1 || dur > 86400) errs.duration = 'Duration must be from 1 second to 24 hours';
+      }
+      return errs;
+    }
+
+    // Patch one field's error state in place. No render() here, so focus,
+    // caret and the mobile keyboard stay put; a full re-render redraws the
+    // same state from openForm.fieldErrors.
+    function applyFieldError(form, name, msg) {
+      const el = form.querySelector('[name="' + name + '"]');
+      const line = form.querySelector('[data-field-error="' + name + '"]');
+      if (!el || !line) return;
+      const bad = !!msg;
+      el.setAttribute('aria-invalid', bad ? 'true' : 'false');
+      // Strip both palettes first: the element may wear either one, depending
+      // on whether render() or a previous patch last set its classes.
+      for (const c of (INP_BORDER + ' ' + INP_BORDER_BAD).split(' ')) el.classList.remove(c);
+      for (const c of (bad ? INP_BORDER_BAD : INP_BORDER).split(' ')) el.classList.add(c);
+      line.textContent = msg || '';
+      line.hidden = !bad;
+    }
+
+    // Live per-field checks on the set form (delegated input + focusout).
+    // A field only nags once it has been left with content (touched) or Log
+    // set was pressed; after that it updates as you type, so the message
+    // clears the moment the value becomes valid.
+    function onSetFieldCheck(e) {
+      const el = e.target;
+      const name = el.name;
+      if (!openForm || (name !== 'reps' && name !== 'weight' && name !== 'duration')) return;
+      const form = document.getElementById('set-form');
+      if (!form || !form.contains(el)) return;
+      if (e.type === 'input') openForm.draft[name] = el.value;
+      if (e.type === 'focusout' && (el.value.trim() !== '' || el.validity.badInput)) {
+        if (!openForm.touched) openForm.touched = {};
+        openForm.touched[name] = true;
+      }
+      if (!openForm.touched || !openForm.touched[name]) return;
+      const msg = validateSetDraft(readDraft(form), { [name]: el.type === 'number' && el.validity.badInput })[name];
+      if (!openForm.fieldErrors) openForm.fieldErrors = {};
+      if (msg) openForm.fieldErrors[name] = msg; else delete openForm.fieldErrors[name];
+      applyFieldError(form, name, msg);
+    }
+
     // Pressing "Log set" used to wait out two round trips (the write, then a
     // full session re-fetch) before anything moved on screen. Now the row is
     // applied locally and the form closes on the press; the save settles in
@@ -1907,15 +1987,28 @@
       // No set_type: the server derives it from the exercise on create and
       // locks it to the existing shape on edit.
       const body = { side: d.side || null, is_drop: !!d.drop, note: d.note };
+      // The live field checks are the front line; this re-run is the fallback
+      // (a form can be submitted from the keyboard without any field ever
+      // being blurred). Nothing is logged and the draft is kept when
+      // something is off — every offending field shows its message.
+      const bad = {};
+      for (const i of e.target.querySelectorAll('input[type="number"]')) {
+        if (i.name && i.validity.badInput) bad[i.name] = true;
+      }
+      const fieldErrors = validateSetDraft(d, bad);
+      if (Object.keys(fieldErrors).length) {
+        openForm.touched = openForm.touched || {};
+        for (const n of Object.keys(fieldErrors)) openForm.touched[n] = true;
+        openForm.fieldErrors = fieldErrors;
+        openForm.error = '';
+        render();
+        return;
+      }
       if (d.type === 'reps') {
-        if (d.reps.trim() === '') { openForm.error = 'Enter reps'; return render(); }
-        if (d.weight.trim() === '') { openForm.error = 'Enter weight (0 for bodyweight)'; return render(); }
         body.reps = Number(d.reps);
         body.weight = draftWeightKg(d);
       } else {
-        const dur = parseDur(d.duration);
-        if (!Number.isInteger(dur) || dur < 1) { openForm.error = 'Enter duration as seconds or mm:ss'; return render(); }
-        body.duration_seconds = dur;
+        body.duration_seconds = parseDur(d.duration);
         body.effort = d.effort;
       }
       // A swipe delete still inside its undo window is only worth waiting for
@@ -2058,7 +2151,7 @@
       toast(msg);
       if (view !== 'session' || !findEntryLocal(entryId)) return;
       if (openForm && (openForm.entryId !== entryId || openForm.setId !== setId)) { render(); return; }
-      openForm = { entryId, setId, draft, error: msg };
+      openForm = { entryId, setId, draft, error: msg, touched: {}, fieldErrors: {} };
       render();
     }
     // Wait for in-flight saves, for actions that need a real server id (edit,
@@ -2828,7 +2921,7 @@
           render();
           break;
         case 'open-add-set':
-          openForm = { entryId: +el.dataset.entry, setId: null, draft: prefillDraft(+el.dataset.entry), error: '' };
+          openForm = { entryId: +el.dataset.entry, setId: null, draft: prefillDraft(+el.dataset.entry), error: '', touched: {}, fieldErrors: {} };
           pendingFocus = 'set-form';
           render();
           break;
@@ -2837,7 +2930,7 @@
           // The row may have been rendered with a temp id and saved since.
           const st = en && en.sets.find((x) => x.id === resolveSetId(+el.dataset.set));
           if (!st) break; // its save failed and the row is gone
-          openForm = { entryId: en.id, setId: st.id, draft: draftFromSet(st), error: '' };
+          openForm = { entryId: en.id, setId: st.id, draft: draftFromSet(st), error: '', touched: {}, fieldErrors: {} };
           pendingFocus = 'set-form';
           render();
           break;
@@ -3038,6 +3131,16 @@
             await handle('open-add-set', { dataset: { entry: String(en.id) } });
             const form = document.getElementById('set-form');
             if (form) {
+              // &badset=1 (with logset=1) fills the form with a value the
+              // field checks must reject — reps "2.5" on a reps exercise,
+              // "1:75" on a timed one — and submits. Nothing is written: the
+              // form stays open with the error showing, so the proposal
+              // checks can assert on the validation state.
+              if (params.get('badset') === '1') {
+                const rf = form.querySelector('[name="reps"]');
+                const tf = rf || form.querySelector('[name="duration"]');
+                if (tf) tf.value = rf ? '2.5' : '1:75';
+              }
               form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
               await settlePendingSets();
             }
