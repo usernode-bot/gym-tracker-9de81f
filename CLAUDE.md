@@ -49,7 +49,11 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. The demo's bodyweight (80 kg, for the strength
+  levels) is likewise never stored on the demo user's settings row:
+  `GET /api/settings` reports `DEMO_BODYWEIGHT_KG` for `?demo=1` reads
+  only, so a staging tester who signs in as the demo user still gets
+  the first-run prompt. Strictly `IS_STAGING`; no-op in production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -112,7 +116,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
@@ -170,3 +174,12 @@ view. All workout data is strictly private per user.
   default to the session's `started_at` (not `NOW()`) so
   bulk-importing history doesn't pollute the exercise picker's
   most-recently-used ordering.
+- **The app follows the platform theme and has no in-app picker**
+  (issue #51). The `<head>` script reads `window.usernode.theme` (never
+  the `?un-theme=` URL parameter) and re-applies it on
+  `usernode:theme-changed`, falling back to `prefers-color-scheme` when
+  opened standalone or if the bridge is missing; it toggles `.dark` on
+  `<html>` and sets `color-scheme`. No render() runs on a theme change,
+  so open forms and the rest timer are undisturbed. A stored
+  `gym-tracker-theme` from the old switcher is ignored, never read or
+  removed.

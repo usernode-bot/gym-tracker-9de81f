@@ -14,9 +14,14 @@
       "expectText": "Start workout"
     },
     {
-      "name": "Theme switcher renders",
+      "name": "Platform theme bridge loads",
       "path": "/",
-      "expectSelector": "[data-action=\"set-theme\"]"
+      "expectSelector": "script[src*=\"usernode-bridge\"]"
+    },
+    {
+      "name": "App follows the platform dark theme",
+      "path": "/?un-theme=dark",
+      "expectSelector": "html[style*=\"color-scheme: dark\"]"
     },
     {
       "name": "Swipeable session rows render",
