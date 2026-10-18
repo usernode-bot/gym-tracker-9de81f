@@ -144,6 +144,11 @@
       "expectSelector": "[data-chart]"
     },
     {
+      "name": "Exercise chart offers Reps metric",
+      "path": "/?demo=1&exercise=900001",
+      "expectSelector": "[data-action=\"chart-metric\"][data-metric=\"reps\"]"
+    },
+    {
       "name": "Muscle chart deep link renders",
       "path": "/?demo=1&muscle=chest",
       "expectSelector": "[data-chart]"
