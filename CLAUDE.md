@@ -49,7 +49,12 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. The demo dataset has **no** `user_settings` row
+  at all: the demo bodyweight for the strength levels (80 kg) is served
+  by the `?demo=1` branch of `GET /api/settings` (`DEMO_BODYWEIGHT_KG`)
+  instead, because the proposal checks' signed-in viewer shares the
+  demo user id (900001) and must keep an empty settings row for that
+  prompt check. Strictly `IS_STAGING`; no-op in production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -112,7 +117,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
@@ -170,3 +175,11 @@ view. All workout data is strictly private per user.
   default to the session's `started_at` (not `NOW()`) so
   bulk-importing history doesn't pollute the exercise picker's
   most-recently-used ordering.
+- **Theme follows the platform** (issue #51): there is no in-app theme
+  switcher and nothing is stored. The head bootstrap and `applyTheme()`
+  read `window.usernode.theme` (`"light"`/`"dark"` from the bridge;
+  null standalone → the OS `prefers-color-scheme`) to toggle `html.dark`
+  plus `style.colorScheme`, and live updates come from
+  `usernode:theme-changed` (and the media query, for the standalone
+  fallback). Any old `gym-tracker-theme` localStorage value is simply
+  ignored, not migrated or deleted.

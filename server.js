@@ -46,6 +46,12 @@ const INDEX_HTML = renderTemplate('index.html');
 
 // All staging demo rows (see seed below) belong to this fake user id.
 const DEMO_USER_ID = 900001;
+// The demo dataset's bodyweight, for the strength levels in ?demo=1
+// previews. Deliberately NOT a user_settings row: the proposal checks'
+// signed-in viewer shares the demo user id in staging, and that viewer
+// must keep an empty settings row so the first-run "Set your bodyweight"
+// prompt still shows. Served by GET /api/settings when ?demo=1.
+const DEMO_BODYWEIGHT_KG = 80;
 
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
@@ -962,6 +968,13 @@ app.post('/api/import', wrap(async (req, res) => {
 // Weights are always STORED in kg; weight_unit only controls how the client
 // displays them (and which unit its weight inputs accept).
 app.get('/api/settings', wrap(async (req, res) => {
+  // Demo fixture: the demo dataset has no user_settings row (see
+  // DEMO_BODYWEIGHT_KG), so ?demo=1 reads get the demo bodyweight from
+  // here instead — while the signed-in viewer's own settings stay empty
+  // and the first-run bodyweight prompt still applies to them.
+  if (IS_STAGING && req.query.demo === '1') {
+    return res.json({ weight_unit: 'kg', bodyweight_kg: DEMO_BODYWEIGHT_KG, staging: true });
+  }
   const uid = readUserId(req);
   const { rows } = await pool.query(
     'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
@@ -1368,16 +1381,13 @@ async function seedStagingDemo() {
     VALUES ${freqSetRows.join(',\n      ')}
     ON CONFLICT (id) DO NOTHING
   `);
-  await pool.query(`
-    INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
-    ON CONFLICT (user_id) DO NOTHING
-  `);
-  // Demo bodyweight for the strength levels: like the demo muscle tags above,
-  // long-lived staging DBs already have the settings row (insert skipped), so
-  // backfill idempotently without clobbering a value that's already set.
-  await pool.query(
-    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
-  );
+  // The demo user has NO user_settings row — including no leftover one from
+  // older seeds that gave it a bodyweight (long-lived staging DBs): the
+  // proposal checks' signed-in viewer shares this id and must keep an empty
+  // settings row so the first-run "Set your bodyweight" prompt still shows.
+  // The demo bodyweight lives in GET /api/settings's ?demo=1 branch instead
+  // (DEMO_BODYWEIGHT_KG). Staging-only; production data is left alone.
+  await pool.query('DELETE FROM user_settings WHERE user_id = $1', [DEMO_USER_ID]);
 }
 
 async function start() {
