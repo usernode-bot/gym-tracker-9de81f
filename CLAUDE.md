@@ -49,7 +49,10 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. The demo's bodyweight (80 kg, which its strength
+  levels are rated against) is served only on `?demo=1` settings
+  reads, not stored under the demo user, so it can't be mistaken for
+  the viewer's own. Strictly `IS_STAGING`; no-op in production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -100,6 +103,12 @@ view. All workout data is strictly private per user.
   only URL that reaches the "Set your bodyweight" prompt), and the
   muscle drill-in carries a status line + a dashed 10 sets/wk
   guideline on its weekly-sets chart.
+- **Theme follows the platform**: the app has no theme switcher and stores
+  no theme preference. It reads `usernode.theme` (the resolved
+  Light/Dark forwarded by the bridge) and listens for
+  `usernode:theme-changed`; standalone, it falls back to
+  `prefers-color-scheme` and follows it live. A `gym-tracker-theme`
+  value left by an older version is ignored, not deleted.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't
@@ -112,7 +121,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
