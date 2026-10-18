@@ -1372,11 +1372,15 @@ async function seedStagingDemo() {
     INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
     ON CONFLICT (user_id) DO NOTHING
   `);
-  // Demo bodyweight for the strength levels: like the demo muscle tags above,
-  // long-lived staging DBs already have the settings row (insert skipped), so
-  // backfill idempotently without clobbering a value that's already set.
+  // The demo bodyweight is NOT stored here. The platform's check viewer
+  // signs in under this same fake id, and the "Bodyweight prompt shows for
+  // a fresh user" check needs their first-run "Set your bodyweight" prompt
+  // reachable — a stored bodyweight would hide it. The strength levels in
+  // the ?demo=1 preview come from the demo bodyweight the client applies
+  // in demo mode instead (public/index.html). Older staging DBs may still
+  // carry a value from the earlier seed, so normalize it away idempotently.
   await pool.query(
-    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
+    `UPDATE user_settings SET bodyweight_kg = NULL WHERE user_id = 900001 AND bodyweight_kg IS NOT NULL`
   );
 }
 
