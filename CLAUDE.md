@@ -49,7 +49,11 @@ view. All workout data is strictly private per user.
   user id when they have no data yet (`ensureStagingUserData`) so the
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
-  prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  prompt still shows. The demo's bodyweight (80 kg, for the demo
+  strength levels) is likewise served only through the `?demo=1`
+  overlay by `GET /api/settings` (`DEMO_BODYWEIGHT_KG`) and is not
+  stored on the fixture account, which stays a fresh user for the
+  prompt. Strictly `IS_STAGING`; no-op in production.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -102,6 +106,13 @@ view. All workout data is strictly private per user.
   guideline on its weekly-sets chart.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
+- **Theme follows the platform** (issue #51): the app has no theme
+  picker and no stored theme preference. A `<head>` script after the
+  bridge reads `usernode.theme` (`"light"`, `"dark"`, or `null` when
+  standalone) into the `html.dark` class and `colorScheme`, listens for
+  `usernode:theme-changed` for live updates without a re-render, and
+  falls back to `prefers-color-scheme` only when there is no platform
+  theme. Keep that script when editing the head.
 - The legacy `presses` table from the scaffold demo is unused — don't
   recreate it, but don't `DROP` it either (prod data is left alone).
 - **The rest timer is deliberately client-side only** — no schema, no
@@ -112,8 +123,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
-  `user_settings`. Tapping the pill expands it into a card with
+  `gym-tracker-rest-target` — **not** in `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
   none`, snapping to 30s on **every** move, claiming
