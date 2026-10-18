@@ -50,6 +50,14 @@ view. All workout data is strictly private per user.
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
   prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  The demo bodyweight (80 kg, for demo-mode strength levels) is served
+  **only to `?demo=1` settings reads**, from the `DEMO_BODYWEIGHT_KG`
+  constant — never stored on the demo user's settings row, because the
+  bench/check viewer signs in **as** that user (900001) and their
+  plain-route read must stay real (bodyweight unset) for the
+  "Bodyweight prompt shows for a fresh user" check. The boot seed
+  retracts a previously-seeded 80 from that row (matching only the
+  seeded value, never one a person chose).
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -100,6 +108,14 @@ view. All workout data is strictly private per user.
   only URL that reaches the "Set your bodyweight" prompt), and the
   muscle drill-in carries a status line + a dashed 10 sets/wk
   guideline on its weekly-sets chart.
+- **The app follows the platform theme** (issue #51): the head bootstrap
+  reads `window.usernode.theme` (forwarded by the bridge, which loads
+  synchronously before the bootstrap — no wrong-theme flash), listens for
+  `usernode:theme-changed` to re-color live, and falls back to the OS
+  `prefers-color-scheme` media query when opened standalone. There is no
+  theme switcher in the app; a stale `gym-tracker-theme` localStorage key
+  from before is simply never read (no migration). `colorScheme` is set on
+  `<html>` so native controls match.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't
@@ -112,7 +128,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:

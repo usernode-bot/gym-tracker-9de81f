@@ -46,6 +46,11 @@ const INDEX_HTML = renderTemplate('index.html');
 
 // All staging demo rows (see seed below) belong to this fake user id.
 const DEMO_USER_ID = 900001;
+// The demo persona's bodyweight, for demo-mode strength levels. Served only
+// to ?demo=1 settings reads (see GET /api/settings) — never written onto the
+// demo user's settings row, because in staging the bench/check viewer signs
+// in AS this user, and that plain-route read must stay real.
+const DEMO_BODYWEIGHT_KG = 80;
 
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
@@ -967,9 +972,18 @@ app.get('/api/settings', wrap(async (req, res) => {
     'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
     [uid]
   );
+  // In demo mode the request impersonates the demo user (readUserId), whose
+  // bodyweight is a fixture of the demo preview — like its workout rows. It
+  // is served from the seed constant here rather than stored on the demo
+  // user's settings row: in staging the bench/check viewer signs in AS the
+  // demo user, and a viewer's own settings read (no demo=1) must stay real,
+  // bodyweight unset, so the first-run "Set your bodyweight" prompt shows.
+  const demoPersona = IS_STAGING && req.query.demo === '1';
   res.json({
     weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
-    bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    bodyweight_kg: demoPersona
+      ? DEMO_BODYWEIGHT_KG
+      : rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
     // Reported so the client can honour the ?logset=1 automation hook, which
     // writes a set and therefore only runs in a preview. No feature of the
     // app is gated on this.
@@ -1372,11 +1386,14 @@ async function seedStagingDemo() {
     INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
     ON CONFLICT (user_id) DO NOTHING
   `);
-  // Demo bodyweight for the strength levels: like the demo muscle tags above,
-  // long-lived staging DBs already have the settings row (insert skipped), so
-  // backfill idempotently without clobbering a value that's already set.
+  // The demo bodyweight is served to ?demo=1 reads from DEMO_BODYWEIGHT_KG
+  // (see GET /api/settings), never stored here: the bench/check viewer signs
+  // in AS this user in staging, and their plain-route settings read must stay
+  // real (bodyweight unset) so the first-run prompt still shows. Retract only
+  // the value older seeds wrote onto this row — a bodyweight a person chose
+  // for themselves is left alone.
   await pool.query(
-    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
+    `UPDATE user_settings SET bodyweight_kg = NULL WHERE user_id = 900001 AND bodyweight_kg = 80`
   );
 }
 
