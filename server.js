@@ -46,6 +46,11 @@ const INDEX_HTML = renderTemplate('index.html');
 
 // All staging demo rows (see seed below) belong to this fake user id.
 const DEMO_USER_ID = 900001;
+// Bodyweight the demo data's strength levels are rated against. Served as
+// part of the ?demo=1 overlay, never written to a user_settings row: the
+// signed-in viewer's own settings must stay bodyweight-less so the
+// first-run "Set your bodyweight" prompt still applies.
+const DEMO_BODYWEIGHT_KG = 80;
 
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
@@ -963,13 +968,16 @@ app.post('/api/import', wrap(async (req, res) => {
 // displays them (and which unit its weight inputs accept).
 app.get('/api/settings', wrap(async (req, res) => {
   const uid = readUserId(req);
+  const demoView = IS_STAGING && req.query.demo === '1';
   const { rows } = await pool.query(
     'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
     [uid]
   );
   res.json({
     weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
-    bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    bodyweight_kg: demoView
+      ? DEMO_BODYWEIGHT_KG
+      : (rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null),
     // Reported so the client can honour the ?logset=1 automation hook, which
     // writes a set and therefore only runs in a preview. No feature of the
     // app is gated on this.
@@ -1372,11 +1380,14 @@ async function seedStagingDemo() {
     INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
     ON CONFLICT (user_id) DO NOTHING
   `);
-  // Demo bodyweight for the strength levels: like the demo muscle tags above,
-  // long-lived staging DBs already have the settings row (insert skipped), so
-  // backfill idempotently without clobbering a value that's already set.
+  // The demo bodyweight is served by the ?demo=1 overlay in GET /api/settings
+  // (DEMO_BODYWEIGHT_KG), not stored on the demo user's settings row: an
+  // older seed wrote 80 there, which made it the signed-in viewer's own
+  // bodyweight and hid the "Set your bodyweight" prompt. Clear just that
+  // leftover value; a bodyweight the viewer set themselves is left alone.
   await pool.query(
-    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
+    `UPDATE user_settings SET bodyweight_kg = NULL WHERE user_id = 900001 AND bodyweight_kg = $1`,
+    [DEMO_BODYWEIGHT_KG]
   );
 }
 

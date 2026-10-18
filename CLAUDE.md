@@ -50,6 +50,23 @@ view. All workout data is strictly private per user.
   preview isn't empty — fully owned/editable rows; `user_settings` is
   deliberately not copied so the "Set your bodyweight" first-run
   prompt still shows. Strictly `IS_STAGING`; no-op in production.
+  The demo bodyweight (80 kg, used to rate the demo strength levels)
+  is served by the `?demo=1` overlay in `GET /api/settings`
+  (`DEMO_BODYWEIGHT_KG`), not stored on the demo user's settings row —
+  otherwise it would also be the signed-in viewer's own bodyweight and
+  hide the first-run prompt. An older seed wrote 80 into that row; the
+  boot seed clears just that leftover value.
+- **Theme comes from the platform, with no in-app switcher** (issue
+  #51). The head bootstrap reads `window.usernode.theme` (seeded by the
+  bridge from the frame URL's `?un-theme=`) and toggles `html.dark`;
+  it re-applies on `usernode:theme-changed` and, when no platform theme
+  is known (standalone), follows `prefers-color-scheme: dark` live.
+  A platform theme always wins over the media query. There is no
+  `gym-tracker-theme` key any more: any stored value is ignored, not
+  migrated or deleted. Tailwind keeps `darkMode: 'class'` and the kit
+  keys off the same `.dark` class, so a theme change repaints in place
+  with no re-render. The home header's only control is the kg/lbs
+  unit switcher.
 - **Weight is stored in kilograms** — a bare NUMERIC(7,2), always kg
   in the DB and in export/import JSON. The client converts for
   display and input only, per the user's `user_settings.weight_unit`
@@ -112,7 +129,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target` — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
