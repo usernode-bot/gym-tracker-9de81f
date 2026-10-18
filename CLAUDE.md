@@ -39,6 +39,13 @@ view. All workout data is strictly private per user.
 
 ## App-specific conventions
 
+- **Theme follows the platform** (issue #51): there is no in-app theme
+  picker and nothing is stored — the head bootstrap reads
+  `usernode.theme` (bridge-forwarded), falls back to
+  `prefers-color-scheme` when opened standalone, and stays live on
+  `usernode:theme-changed`. Don't reintroduce a picker or a
+  `gym-tracker-theme` localStorage key.
+
 - **All five workout tables are `staging:private`**: `exercises`,
   `workout_sessions`, `session_exercises`, `sets`, `user_settings`.
   Every row is per-user content; staging gets schema only. Staging
@@ -97,7 +104,12 @@ view. All workout data is strictly private per user.
   toggle (`&freq=1` / `&strength=1` with `&progress=1` pre-select a
   mode for the dapp.json checks — the hub itself still opens on
   Frequency for a user with no bodyweight, so `&strength=1` is the
-  only URL that reaches the "Set your bodyweight" prompt), and the
+  only URL that reaches the "Set your bodyweight" prompt), and
+  `&bw-prompt=1` renders that prompt (and the "— · set" button) even
+  when the viewer has a bodyweight stored — display-only screenshot
+  state, because the checks' shared signed-in viewer carries demo data
+  and a stored bodyweight, so the fresh-user prompt is otherwise
+  unreachable by URL), and the
   muscle drill-in carries a status line + a dashed 10 sets/wk
   guideline on its weekly-sets chart.
 - **Ownership checks join up to `workout_sessions.user_id`** and
@@ -112,7 +124,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
+  `gym-tracker-rest-target`) — **not** in
   `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:

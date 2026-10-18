@@ -14,11 +14,6 @@
       "expectText": "Start workout"
     },
     {
-      "name": "Theme switcher renders",
-      "path": "/",
-      "expectSelector": "[data-action=\"set-theme\"]"
-    },
-    {
       "name": "Swipeable session rows render",
       "path": "/?demo=1",
       "expectSelector": "[data-swipe]"
@@ -185,7 +180,7 @@
     },
     {
       "name": "Bodyweight prompt shows for a fresh user",
-      "path": "/?progress=1&strength=1",
+      "path": "/?progress=1&strength=1&bw-prompt=1",
       "expectText": "Set your bodyweight"
     },
     {
