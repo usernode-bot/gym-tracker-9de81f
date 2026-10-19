@@ -1437,6 +1437,12 @@
       // callback so it never joins the root slide.
       // renderRestDock() decides visibility too (restDockShown), so a
       // re-render that opens or closes a form/sheet hides or restores it.
+      // Leaving the session cancels the rest (issue #88) — forms/sheets
+      // only hide it, they never stop the clock.
+      if (view !== 'session' && stopwatchStart) {
+        stopwatchStart = null;
+        restNotified = false;
+      }
       renderRestDock();
       const apply = () => {
         const html = view === 'home' ? homeHtml()
@@ -2335,9 +2341,11 @@
         || editingNote !== null || editingSessionNote);
     }
     // The dock shows only in a session with nothing blocking it. Hidden is
-    // display:none, so it can't take a tap; the timer itself is untouched —
-    // tick() keeps updating the (invisible) readout and still fires the
-    // rest's-up cue, and the dock comes back at the right time.
+    // display:none, so it can't take a tap; while the block is inside the
+    // session the timer itself is untouched — tick() keeps updating the
+    // (invisible) readout and still fires the rest's-up cue, and the dock
+    // comes back at the right time. Leaving the session is different: the
+    // render() guard cancels the rest, so nothing fires on other screens.
     function restDockShown() {
       return view === 'session' && !restDockBlocked();
     }

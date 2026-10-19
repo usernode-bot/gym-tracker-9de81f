@@ -139,7 +139,11 @@ view. All workout data is strictly private per user.
   per the single `restDockBlocked()` list that `renderRestDock()`
   reads on every render; add a new form/sheet's state there. Hiding
   never touches the timer: it keeps counting, still fires the end cue,
-  and the pill returns (collapsed) when the surface closes.
+  and the pill returns (collapsed) when the surface closes. Leaving the
+  session view (Back home, or an exercise/muscle chart) cancels the rest
+  outright in `render()` — `stopwatchStart` cleared, no cue on other
+  screens; reopening the session re-seeds from the last set via
+  `seedStopwatch()`.
   Notes (session, entry, set) wrap as paragraphs —
   `whitespace-pre-wrap break-words`, never `truncate`.
 - **Logging a set is optimistic** (issue #43): `onSetSubmit` never
