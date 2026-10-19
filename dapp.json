@@ -259,14 +259,14 @@
       "expectSelector": "[data-note=\"entry\"]"
     },
     {
-      "name": "Expanded rest timer offers Reset",
+      "name": "Open rest card offers +15s, Pause and Skip",
       "path": "/?demo=1&session=900002&rest=1",
-      "expectSelector": "[data-action=\"rest-reset\"]"
+      "expectSelector": "[data-action=\"rest-extend\"]"
     },
     {
-      "name": "Expanded rest timer offers Cancel",
+      "name": "Open rest card offers Skip",
       "path": "/?demo=1&session=900002&rest=1",
-      "expectSelector": "[data-action=\"rest-cancel\"]"
+      "expectSelector": "[data-action=\"rest-skip\"]"
     },
     {
       "name": "Rest length dial renders",
@@ -274,9 +274,70 @@
       "expectSelector": "[data-rest-dial]"
     },
     {
-      "name": "Rest timer defaults to a 2:00 target",
+      "name": "Rest default length comes from user settings (1:30)",
       "path": "/?demo=1&session=900002&rest=1",
-      "expectText": "2:00"
+      "expectText": "1:30"
+    },
+    {
+      "name": "Idle rest card offers Start",
+      "path": "/?demo=1&session=900002&restcard=1",
+      "expectSelector": "[data-action=\"rest-start\"]"
+    },
+    {
+      "name": "Rest card offers the sound-at-zero switch",
+      "path": "/?demo=1&session=900002&restcard=1",
+      "expectSelector": "[data-action=\"rest-sound\"]"
+    },
+    {
+      "name": "+15s extends the running rest",
+      "path": "/?demo=1&session=900002&rest=1&restact=extend",
+      "expectSelector": "body[data-rest-target=\"105\"]"
+    },
+    {
+      "name": "Pause freezes the countdown",
+      "path": "/?demo=1&session=900002&rest=1&restact=pause",
+      "expectSelector": "body[data-rest-paused=\"1\"]"
+    },
+    {
+      "name": "Paused card offers Resume",
+      "path": "/?demo=1&session=900002&rest=1&restact=pause",
+      "expectText": "Resume"
+    },
+    {
+      "name": "Skip ends the rest",
+      "path": "/?demo=1&session=900002&rest=1&restact=skip",
+      "expectSelector": "body[data-rest-running=\"0\"]"
+    },
+    {
+      "name": "End-of-rest cue beeps when sound is on",
+      "path": "/?demo=1&session=900002&rest=1&restfire=1",
+      "expectSelector": "body[data-rest-beep=\"1\"]"
+    },
+    {
+      "name": "End-of-rest cue vibrates when supported",
+      "path": "/?demo=1&session=900002&rest=1&restfire=1",
+      "expectSelector": "body[data-rest-vibrate=\"1\"]"
+    },
+    {
+      "name": "End-of-rest cue flashes the card",
+      "path": "/?demo=1&session=900002&rest=1&restfire=1",
+      "expectSelector": "body[data-rest-flashed=\"1\"]"
+    },
+    {
+      "name": "Sound off means no beep at zero",
+      "path": "/?demo=1&session=900002&rest=1&restfire=1&restsound=0",
+      "expectSelector": "body[data-rest-beep=\"0\"]"
+    },
+    {
+      "name": "Remaining time survives a page refresh in the same session",
+      "path": "/?session=latest&restsim=1",
+      "expectText": "0:45",
+      "expectSelector": "body[data-rest-paused=\"1\"]"
+    },
+    {
+      "name": "Timer stops when the session view is left",
+      "path": "/?session=latest&logset=1&home=1",
+      "expectSelector": "body[data-rest-running=\"0\"]"
     },
     {
       "name": "Set form offers the Log set button",
@@ -304,9 +365,22 @@
       "expectSelector": "body:has(#picker-search) #rest-dock.hidden"
     },
     {
+      "name": "Logging a set pops the floating rest card",
+      "path": "/?session=latest&logset=1",
+      "expectSelector": "#rest-card:not(.hidden)",
+      "id": "rest.card-after-set",
+      "visual": true,
+      "impact": ["public/index.html", "server.js"]
+    },
+    {
       "name": "Logging a set arms the rest timer",
       "path": "/?session=latest&logset=1",
       "expectSelector": "#stopwatch[data-armed=\"1\"]"
+    },
+    {
+      "name": "The rest countdown starts on its own against the saved default",
+      "path": "/?session=latest&logset=1",
+      "expectSelector": "body[data-rest-target=\"90\"]"
     },
     {
       "name": "Logged set row renders once the save settles",
@@ -317,6 +391,11 @@
       "name": "Latest-session deep link opens a workout",
       "path": "/?session=latest",
       "expectText": "Add exercise"
+    },
+    {
+      "name": "A changed rest default saves to user settings (2:00 round trip)",
+      "path": "/?session=latest&rest=1&resttarget=120",
+      "expectText": "2:00"
     }
   ],
   "admins": [

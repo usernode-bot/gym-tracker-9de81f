@@ -109,25 +109,44 @@ view. All workout data is strictly private per user.
   return 404 (not 403) for other users' rows.
 - The legacy `presses` table from the scaffold demo is unused — don't
   recreate it, but don't `DROP` it either (prod data is left alone).
-- **The rest timer is deliberately client-side only** — no schema, no
-  API, no server state. It counts **down** to a target and then keeps
-  going as overtime (`+0:12`), so a missed cue is never lost (issue
-  #40). `stopwatchStart` (epoch ms of the last logged set, a manual
-  Reset, or a resumed in-flight rest) plus `restTargetSec` are the only
-  state; remaining/overtime/progress are derived every tick, and the
-  rest still gives up after an hour. The target is 0:30–10:00 in 30s
-  steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` — **not** in
-  `user_settings`. Tapping the pill expands it into a card with
-  Reset/Cancel and a hand-rolled draggable dial (the native kit ships
-  no slider): Pointer Events + `setPointerCapture` + `touch-action:
-  none`, snapping to 30s on **every** move, claiming
-  `unNative.gestures` past a 6px threshold, degrading to plain pointer
-  handling with no kit. `tick()` is a pure readout update (textContent
-  + progress width) so a 1 Hz repaint can't yank the knob mid-drag;
-  all structural changes go through `renderRestDock()`.
-  `&rest=1` (with `&session=<id>`) arms the timer and opens the card
-  for the dapp.json checks. The whole thing lives in a permanent
+- **The rest timer between sets** (issues #40, #94) is client-side for
+  the in-flight countdown, server-side for the default length. Logging
+  a set pops the floating rest card and starts a countdown from the
+  user's saved default: `user_settings.rest_seconds` (INTEGER, default
+  90; PATCH `/api/settings` validates 30–600). The card offers
+  `+15s` / Pause / Skip; at zero it flashes the card, beeps (unless the
+  sound switch is off) and vibrates where supported, then keeps going
+  as overtime (`+0:12`) so a missed cue is never lost. State model:
+  `restTargetSec` is the saved default (seeded from GET /api/settings,
+  written back debounce-800ms by the card's length dial);
+  `restRun = { sid, start, target, paused, remainMs }` is the in-flight
+  rest — remaining/overtime/progress are derived every tick, and the
+  rest gives up after an hour of running (a paused one keeps
+  indefinitely). The in-flight rest persists to `localStorage` under
+  `gym-tracker-rest-state` keyed by session id, so the remaining time
+  survives a page refresh within the same session; it resumes on
+  returning to that session within the hour. Leaving the session view
+  stops the rest (no ticks, no cue) but keeps the persisted state for
+  that resume. The sound flag is per-device `localStorage`
+  (`gym-tracker-rest-sound`). The card also has a hand-rolled draggable
+  dial (the native kit ships no slider): Pointer Events +
+  `setPointerCapture` + `touch-action: none`, snapping to 30s on
+  **every** move, claiming `unNative.gestures` past a 6px threshold,
+  degrading to plain pointer handling with no kit. `tick()` is a pure
+  readout update (textContent + progress width) so a 1 Hz repaint can't
+  yank the knob mid-drag; all structural changes go through
+  `renderRestDock()`, which also maintains the body-level check markers
+  (`data-rest-running` / `data-rest-paused` / `data-rest-target`); the
+  end cue exposes `data-rest-beep` / `data-rest-vibrate` /
+  `data-rest-flashed` for the headless checks. Check hooks (all with
+  `&session=<id>` or `&session=latest`): `&rest=1` starts a fresh rest
+  and opens the card, `&restcard=1` opens the idle card, `&restact=`
+  (comma list) drives the card actions, `&restfire=1` fires the end
+  cue, `&restsound=0` turns sound off for one page load (in memory
+  only), `&resttarget=<sec>` PATCHes the saved default and leaves a
+  deferred-restore flag the next boot performs, `&restsim=1` (staging)
+  writes a paused mid-rest state the restore path picks up. The whole
+  thing lives in a permanent
   body-level `#rest-dock` (outside `#app`, shown/hidden by `render()`
   for the session view) — the one bottom-anchored surface that
   deliberately does **not** consume `--un-kb-inset` and never
