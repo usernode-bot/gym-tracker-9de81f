@@ -968,18 +968,19 @@ app.get('/api/settings', wrap(async (req, res) => {
   // ?demo=1 strength-level checks have one. The signed-in staging viewer can
   // BE that user id, and the first-run "Set your bodyweight" prompt must
   // still show for them — the same reason ensureStagingUserData never copies
-  // user_settings. So outside a ?demo=1 read, the demo user's seeded settings
-  // row is treated as part of the demo dataset, not the viewer's own.
-  const outsideDemo = !IS_STAGING || req.query.demo === '1' || uid !== DEMO_USER_ID;
-  const { rows } = outsideDemo
-    ? await pool.query(
-      'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
-      [uid]
-    )
-    : { rows: [] };
+  // user_settings. So outside a ?demo=1 read, the demo user's seeded
+  // weight_unit/bodyweight are treated as part of the demo dataset, not the
+  // viewer's own. rest_seconds is exempt from that hide: the demo seed never
+  // sets it, so a viewer's saved rest default is always their own.
+  const demoHide = IS_STAGING && req.query.demo !== '1' && uid === DEMO_USER_ID;
+  const { rows } = await pool.query(
+    'SELECT weight_unit, bodyweight_kg, rest_seconds FROM user_settings WHERE user_id = $1',
+    [uid]
+  );
   res.json({
-    weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
-    bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    weight_unit: !demoHide && rows[0] ? rows[0].weight_unit : 'kg',
+    bodyweight_kg: !demoHide && rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    rest_seconds: rows[0] && Number.isInteger(rows[0].rest_seconds) ? rows[0].rest_seconds : 90,
     // Reported so the client can honour the ?logset=1 automation hook, which
     // writes a set and therefore only runs in a preview. No feature of the
     // app is gated on this.
@@ -993,7 +994,8 @@ app.patch('/api/settings', wrap(async (req, res) => {
   const body = req.body || {};
   const hasUnit = Object.prototype.hasOwnProperty.call(body, 'weight_unit');
   const hasBw = Object.prototype.hasOwnProperty.call(body, 'bodyweight_kg');
-  if (!hasUnit && !hasBw) {
+  const hasRest = Object.prototype.hasOwnProperty.call(body, 'rest_seconds');
+  if (!hasUnit && !hasBw && !hasRest) {
     return res.status(400).json({ error: 'Nothing to update' });
   }
   if (hasUnit && body.weight_unit !== 'kg' && body.weight_unit !== 'lbs') {
@@ -1007,21 +1009,30 @@ app.patch('/api/settings', wrap(async (req, res) => {
     }
     bw = Math.round(bw * 100) / 100;
   }
+  let rest = null;
+  if (hasRest) {
+    rest = Number(body.rest_seconds);
+    if (!Number.isInteger(rest) || rest < 30 || rest > 600) {
+      return res.status(400).json({ error: 'rest_seconds must be a whole number between 30 and 600' });
+    }
+  }
   await pool.query(
-    `INSERT INTO user_settings (user_id, weight_unit, bodyweight_kg)
-     VALUES ($1, COALESCE($2, 'kg'), $3)
+    `INSERT INTO user_settings (user_id, weight_unit, bodyweight_kg, rest_seconds)
+     VALUES ($1, COALESCE($2, 'kg'), $3, COALESCE($5, 90))
      ON CONFLICT (user_id) DO UPDATE SET
        weight_unit = COALESCE($2, user_settings.weight_unit),
-       bodyweight_kg = CASE WHEN $4 THEN $3 ELSE user_settings.bodyweight_kg END`,
-    [req.user.id, hasUnit ? body.weight_unit : null, hasBw ? bw : null, hasBw]
+       bodyweight_kg = CASE WHEN $4 THEN $3 ELSE user_settings.bodyweight_kg END,
+       rest_seconds = CASE WHEN $6 THEN $5 ELSE user_settings.rest_seconds END`,
+    [req.user.id, hasUnit ? body.weight_unit : null, hasBw ? bw : null, hasBw, hasRest ? rest : null, hasRest]
   );
   const { rows } = await pool.query(
-    'SELECT weight_unit, bodyweight_kg FROM user_settings WHERE user_id = $1',
+    'SELECT weight_unit, bodyweight_kg, rest_seconds FROM user_settings WHERE user_id = $1',
     [req.user.id]
   );
   res.json({
     weight_unit: rows[0].weight_unit,
     bodyweight_kg: rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    rest_seconds: rows[0].rest_seconds,
   });
 }));
 
@@ -1140,6 +1151,10 @@ async function migrate() {
   // Bodyweight (kg, like every stored weight) powers the strength-level
   // categories; NULL = not set, levels stay hidden.
   await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bodyweight_kg NUMERIC(5,2)`);
+  // Default rest length in seconds for the between-sets rest timer (issue
+  // #94): the client counts down to this when a set is logged, and the rest
+  // card's length dial persists changes here.
+  await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS rest_seconds INTEGER NOT NULL DEFAULT 90`);
   // Every row is per-user workout content the UI gates to its owner, so the
   // whole chain is private (staging gets schema only, no prod rows).
   await pool.query(`COMMENT ON TABLE exercises IS 'staging:private'`);
