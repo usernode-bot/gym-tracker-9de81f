@@ -317,6 +317,26 @@
       "name": "Latest-session deep link opens a workout",
       "path": "/?session=latest",
       "expectText": "Add exercise"
+    },
+    {
+      "name": "Weekly volume vs target section renders",
+      "path": "/?demo=1",
+      "expectSelector": "[data-volume-summary]"
+    },
+    {
+      "name": "Weekly volume shows the total lifted this week",
+      "path": "/?demo=1",
+      "expectText": "kg lifted"
+    },
+    {
+      "name": "Weekly volume lists the target",
+      "path": "/?demo=1",
+      "expectText": "Sessions this week"
+    },
+    {
+      "name": "Weekly volume renders for a real user",
+      "path": "/",
+      "expectSelector": "[data-volume-summary]"
     }
   ],
   "admins": [

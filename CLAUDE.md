@@ -182,3 +182,21 @@ view. All workout data is strictly private per user.
   default to the session's `started_at` (not `NOW()`) so
   bulk-importing history doesn't pollute the exercise picker's
   most-recently-used ordering.
+
+- **Weekly volume vs targets** (the home dashboard's bottom section,
+  `GET /api/volume/weekly-target`): completed sessions are the
+  Monday-started calendar weeks the server buckets over an 84-day
+  window. Volume is the weight lifted, weighted per exercise by the
+  catalog's `volumeFactor` (`exercise-catalog.js`, default 1 — the plain
+  two-hand lift): `reps × weight × factor`, plus
+  `reps × bodyweight × factor` for a weight-0 (bodyweight) reps set, so
+  unweighted work still counts. Bodyweight comes from `user_settings`
+  (the weight history this derivation reads). The weekly target is the
+  same metric averaged over the last 4 complete weeks; a user with no
+  history gets a small nominal target (`12000 kg`, flagged
+  `is_nominal_target`) so the section is never blank. The section is
+  late-filled after the home list paints (same pattern as the Progress
+  hub's body diagram) and its fetch failure only costs the section.
+  `req.now` is read through the platform (`?un-now` / `x-usernode-now`,
+  staging only) so a preview opened at a moment sees that week; the code
+  path is identical everywhere.
