@@ -414,7 +414,7 @@
     // ---------- progress / muscle constants ----------
     const MUSCLE_LABELS = { chest: 'Chest', back: 'Back', shoulders: 'Shoulders', biceps: 'Biceps', triceps: 'Triceps', quads: 'Quads', hamstrings: 'Hamstrings', glutes: 'Glutes', calves: 'Calves', core: 'Core', forearms: 'Forearms' };
     const MUSCLE_SLUGS = Object.keys(MUSCLE_LABELS);
-    const METRIC_LABELS = { maxw: 'Max weight', vol: 'Volume', e1rm: 'Est. 1RM', maxdur: 'Longest set', totaldur: 'Total time', sets: 'Sets' };
+    const METRIC_LABELS = { maxw: 'Max weight', reps: 'Reps', vol: 'Volume', e1rm: 'Est. 1RM', maxdur: 'Longest set', totaldur: 'Total time', sets: 'Sets' };
 
     // Strength-level thresholds: multiples of bodyweight applied to the
     // muscle's current Est. 1RM — [novice, intermediate, advanced]; any score
@@ -965,7 +965,7 @@
     function exerciseMetrics(d) {
       const hasReps = d.sessions.some((s) => s.sets.some((x) => x.set_type === 'reps'));
       const hasTime = d.sessions.some((s) => s.sets.some((x) => x.set_type === 'time'));
-      return [...(hasReps ? ['maxw', 'vol', 'e1rm'] : []), ...(hasTime ? ['maxdur', 'totaldur'] : [])];
+      return [...(hasReps ? ['maxw', 'reps', 'vol', 'e1rm'] : []), ...(hasTime ? ['maxdur', 'totaldur'] : [])];
     }
 
     // One session's value for a metric, in kg / seconds; null when the
@@ -981,6 +981,7 @@
       const rs = sets.filter((s) => s.set_type === 'reps');
       if (!rs.length) return null;
       if (metric === 'maxw') return Math.max(...rs.map((s) => parseFloat(s.weight) || 0));
+      if (metric === 'reps') return rs.reduce((a, s) => a + (s.reps || 0), 0);
       if (metric === 'vol') return rs.reduce((a, s) => a + (s.reps || 0) * (parseFloat(s.weight) || 0), 0);
       // e1rm (Epley) from weighted sets only; all-bodyweight sessions chart as 0
       const ws = rs.filter((s) => (parseFloat(s.weight) || 0) > 0);
@@ -1014,6 +1015,31 @@
       while (cur.getTime() <= last && out.length < 1040) {
         const b = byWeek.get(cur.getTime()) || { vol: 0, sets: 0 };
         out.push({ t: cur.getTime(), vol: b.vol, sets: b.sets });
+        cur.setDate(cur.getDate() + 7);
+      }
+      return out;
+    }
+
+    // Weekly buckets for the exercise chart, same shape as the muscle chart:
+    // one point per Monday-start week, continuous from the first week with a
+    // matching set through the current week, zero-filled. Sum metrics add the
+    // week's per-session values up; the rest take the week's best (the max of
+    // session maxima is the weekly max).
+    const SUM_METRICS = new Set(['reps', 'vol', 'totaldur']);
+    function exerciseWeeks(sessions, metric) {
+      const byWeek = new Map();
+      for (const s of sessions) {
+        const v = sessionMetricValue(s.sets, metric);
+        if (v === null) continue;
+        const w = weekStartMs(new Date(s.started_at).getTime());
+        byWeek.set(w, SUM_METRICS.has(metric) ? (byWeek.get(w) || 0) + v : Math.max(byWeek.get(w) || 0, v));
+      }
+      if (!byWeek.size) return [];
+      const last = weekStartMs(Date.now());
+      const out = [];
+      const cur = new Date(Math.min(...byWeek.keys()));
+      while (cur.getTime() <= last && out.length < 1040) {
+        out.push({ t: cur.getTime(), v: byWeek.get(cur.getTime()) || 0 });
         cur.setDate(cur.getDate() + 7);
       }
       return out;
@@ -1176,7 +1202,7 @@
     // Axis/gridline label for a metric value (kg → display unit for weights).
     function fmtMetricVal(metric, v) {
       if (metric === 'maxdur' || metric === 'totaldur') return fmtDur(Math.round(v));
-      if (metric === 'sets') return String(Math.round(v * 10) / 10);
+      if (metric === 'sets' || metric === 'reps') return String(Math.round(v * 10) / 10);
       const n = weightUnit === 'lbs' ? v * LBS_PER_KG : v;
       return String(Math.round(n * 10) / 10);
     }
@@ -1252,9 +1278,7 @@
       if (!d.sessions.length) {
         body = '<div class="text-center text-zinc-500 dark:text-zinc-600 py-12">No sets logged yet — its history will appear here.</div>';
       } else {
-        const points = visibleSessions
-          .map((s) => ({ t: new Date(s.started_at).getTime(), v: sessionMetricValue(s.sets, metric) }))
-          .filter((p) => p.v !== null);
+        const points = exerciseWeeks(visibleSessions, metric);
         const wm = metric === 'maxw' || metric === 'vol' || metric === 'e1rm';
         const histRowCls = hasKit()
           ? 'un-group-row relative flex items-stretch overflow-hidden'
@@ -1269,7 +1293,7 @@
             </div>`).join('');
         body = `
           ${metrics.length > 1 ? metricToggleHtml(metrics, metric) : ''}
-          <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${METRIC_LABELS[metric]}${wm ? ' · ' + weightUnit : ''}</div>
+          <div class="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600 mb-1">${'Weekly ' + METRIC_LABELS[metric].toLowerCase()}${wm ? ' · ' + weightUnit : ''}</div>
           ${chartSvgHtml(points, (v) => fmtMetricVal(metric, v))}
           <div class="mt-4 mb-2 text-sm font-semibold text-zinc-600 dark:text-zinc-300">History</div>
           ${hasKit() ? `<div class="un-group mb-6">${hist}</div>` : `<div class="space-y-1.5 pb-6">${hist}</div>`}`;
