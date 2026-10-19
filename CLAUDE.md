@@ -107,6 +107,12 @@ view. All workout data is strictly private per user.
   guideline on its weekly-sets chart.
 - **Ownership checks join up to `workout_sessions.user_id`** and
   return 404 (not 403) for other users' rows.
+- **`POST /api/sessions/repeat`** starts a new workout carrying the same
+  exercise list (same order, same ids) as the user's most recent session
+  that has exercises — entries only, no sets and no notes. Used by the
+  home screen's "↻ Repeat last workout" button (hidden until a past
+  workout with an exercise exists). Source lookup is filtered by
+  `user_id`; exercises join on `e.user_id`.
 - The legacy `presses` table from the scaffold demo is unused — don't
   recreate it, but don't `DROP` it either (prod data is left alone).
 - **The rest timer is deliberately client-side only** — no schema, no
