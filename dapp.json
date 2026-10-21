@@ -14,9 +14,9 @@
       "expectText": "Start workout"
     },
     {
-      "name": "Theme switcher renders",
-      "path": "/",
-      "expectSelector": "[data-action=\"set-theme\"]"
+      "name": "App follows the platform theme",
+      "path": "/?un-theme=dark",
+      "expectSelector": "html.dark"
     },
     {
       "name": "Swipeable session rows render",

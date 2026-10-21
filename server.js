@@ -46,6 +46,10 @@ const INDEX_HTML = renderTemplate('index.html');
 
 // All staging demo rows (see seed below) belong to this fake user id.
 const DEMO_USER_ID = 900001;
+// The demo dataset's bodyweight, used only to compute demo strength levels on
+// ?demo=1 reads. Never written to user_settings: staging signs the tester in
+// as DEMO_USER_ID itself, so a stored value would hide the first-run prompt.
+const DEMO_BODYWEIGHT_KG = 80;
 
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
@@ -969,7 +973,12 @@ app.get('/api/settings', wrap(async (req, res) => {
   );
   res.json({
     weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
-    bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
+    // The demo bodyweight belongs to the demo dataset, not to the signed-in
+    // tester's settings: it is served on ?demo=1 reads only, so the demo
+    // strength levels render while a real tester still starts without one.
+    bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null
+      ? rows[0].bodyweight_kg
+      : (IS_STAGING && req.query.demo === '1' ? DEMO_BODYWEIGHT_KG : null),
     // Reported so the client can honour the ?logset=1 automation hook, which
     // writes a set and therefore only runs in a preview. No feature of the
     // app is gated on this.
@@ -1372,12 +1381,10 @@ async function seedStagingDemo() {
     INSERT INTO user_settings (user_id, weight_unit) VALUES (900001, 'kg')
     ON CONFLICT (user_id) DO NOTHING
   `);
-  // Demo bodyweight for the strength levels: like the demo muscle tags above,
-  // long-lived staging DBs already have the settings row (insert skipped), so
-  // backfill idempotently without clobbering a value that's already set.
-  await pool.query(
-    `UPDATE user_settings SET bodyweight_kg = 80 WHERE user_id = 900001 AND bodyweight_kg IS NULL`
-  );
+  // Demo bodyweight for the strength levels is served only on ?demo=1 reads
+  // (see GET /api/settings), never stored: the demo id is also the staging
+  // tester's own account, and a stored value would hide that tester's
+  // first-run "Set your bodyweight" prompt (and its dapp.json check).
 }
 
 async function start() {
