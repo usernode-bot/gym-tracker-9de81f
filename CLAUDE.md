@@ -112,8 +112,7 @@ view. All workout data is strictly private per user.
   state; remaining/overtime/progress are derived every tick, and the
   rest still gives up after an hour. The target is 0:30–10:00 in 30s
   steps, defaults to 2:00, and persists in `localStorage` under
-  `gym-tracker-rest-target` (like `gym-tracker-theme`) — **not** in
-  `user_settings`. Tapping the pill expands it into a card with
+  `gym-tracker-rest-target` — **not** in `user_settings`. Tapping the pill expands it into a card with
   Reset/Cancel and a hand-rolled draggable dial (the native kit ships
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
   none`, snapping to 30s on **every** move, claiming
@@ -131,6 +130,14 @@ view. All workout data is strictly private per user.
   input collapses the card so its backdrop can't eat taps invisibly.
   Notes (session, entry, set) wrap as paragraphs —
   `whitespace-pre-wrap break-words`, never `truncate`.
+- **No theme picker** (issue #51): the app follows the platform's
+  resolved theme — `window.usernode.theme` from the bridge (`'light'`
+  or `'dark'`, `null` when standalone), re-applied live on
+  `usernode:theme-changed` — and falls back to `prefers-color-scheme`
+  only while no platform theme is present. All of it lives in the
+  inline `<head>` bootstrap, after the bridge tag; nothing else touches
+  `html.dark`. No `localStorage` theme key is read or written, so an
+  old `gym-tracker-theme` value is ignored and left in place.
 - **Logging a set is optimistic** (issue #43): `onSetSubmit` never
   awaits the network before painting. The new/edited row goes straight
   into the local session payload with a negative temp id and
