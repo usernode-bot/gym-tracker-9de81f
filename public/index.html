@@ -617,6 +617,27 @@
     function fmtDateShort(ts) {
       return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
     }
+    // Session duration: started_at → last logged set, "Ym" or "Xh Ym".
+    // Under a minute (imported history records sets at the start time) and
+    // empty values show nothing; minutes round down.
+    function fmtDuration(startTs, endTs) {
+      if (!startTs || !endTs) return '';
+      const mins = Math.floor((new Date(endTs) - new Date(startTs)) / 60000);
+      if (!Number.isFinite(mins) || mins < 1) return '';
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return h ? `${h}h ${m}m` : `${m}m`;
+    }
+    function sessionLastSetAt(s) {
+      let last = null;
+      for (const en of s.entries || []) {
+        if (isPendingDelete('entry', en.id)) continue;
+        for (const st of en.sets || []) {
+          if (isPendingDelete('set', st.id) || !st.created_at) continue;
+          if (!last || st.created_at > last) last = st.created_at;
+        }
+      }
+      return last;
+    }
     // Weights are stored in kg; convert only for display / input. lbs are
     // shown to 1 decimal, and lbs input is rounded to 2 decimals of kg
     // (matching the column's NUMERIC(7,2)) before saving.
@@ -812,8 +833,8 @@
       }
       if (!backAction) {
         return `<header class="flex items-center justify-between gap-2 py-5">
-          <h1 class="text-2xl font-bold">${title}</h1>
-          <div class="flex items-center gap-2">${right || ''}</div>
+          ${title ? `<h1 class="text-2xl font-bold">${title}</h1>` : ''}
+          <div class="flex items-center gap-2 ${title ? '' : 'ml-auto'}">${right || ''}</div>
         </header>`;
       }
       return `<header class="flex items-center gap-2 py-4">
@@ -839,7 +860,7 @@
           <div data-swipe="session:${s.id}" class="${rowCls}">
             <button data-action="open-session" data-id="${s.id}" class="flex-1 text-left px-4 py-3 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 min-w-0">
               <div class="font-medium">${fmtDate(s.started_at)}</div>
-              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}</div>
+              <div class="text-sm text-zinc-500 mt-0.5">${s.exercise_count} exercise${s.exercise_count === 1 ? '' : 's'} · ${s.set_count} set${s.set_count === 1 ? '' : 's'}${(() => { const dur = fmtDuration(s.started_at, s.last_set_at); return dur ? ` · <span data-session-duration>${dur}</span>` : ''; })()}</div>
               ${s.exercise_names ? `<div class="text-xs text-zinc-500 dark:text-zinc-600 truncate mt-0.5">${esc(s.exercise_names)}</div>` : ''}
               ${s.note ? `<div class="text-xs italic text-amber-700 dark:text-amber-200/80 truncate mt-0.5">${esc(s.note)}</div>` : ''}
             </button>
@@ -850,13 +871,13 @@
         ? `<div class="un-group">${rows}</div>`
         : `<div class="space-y-2">${rows}</div>`;
       return `
-        ${headerHtml({ title: '🏋️ Gym Tracker', backAction: null, large: true, right: unitSwitcherHtml() + themeSwitcherHtml() + appearanceSwitcherHtml() })}
+        ${headerHtml({ title: '', backAction: null, right: unitSwitcherHtml() + appearanceSwitcherHtml() })}
         <button data-action="start-workout" class="w-full py-3.5 rounded-xl bg-accent hover:bg-accent-hover ${hasKit() ? '' : 'active:scale-[.99] transition-all'} font-semibold text-accent-on shadow-lg shadow-accent/20 mb-2">+ Start workout</button>
         <button data-action="open-progress" class="w-full py-3 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 font-medium mb-5">📈 Progress</button>
         ${list}
-        <div class="flex justify-center gap-6 mt-6">
-          <button data-action="export-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Export JSON</button>
-          <button data-action="import-json" class="un-touch-target text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400 px-2 py-1">Import JSON</button>
+        <div class="grid grid-cols-2 gap-2 mt-6">
+          <button data-action="export-json" class="un-touch-target w-full py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-sm font-medium">Export JSON</button>
+          <button data-action="import-json" class="un-touch-target w-full py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-sm font-medium">Import JSON</button>
         </div>
         ${!hasKit() && importSheet ? importSheetHtml() : ''}${!hasKit() && exportSheet ? exportSheetHtml() : ''}${!hasKit() && appearanceSheet ? appearanceSheetHtml() : ''}`;
     }
@@ -1043,8 +1064,9 @@
         : session.note
           ? `<button data-action="session-note" data-note="session" class="block w-full text-left mb-3 text-sm italic leading-snug whitespace-pre-wrap break-words text-amber-700 dark:text-amber-200/80">${esc(session.note)}</button>`
           : `<button data-action="session-note" class="block mb-3 -mt-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-600 dark:hover:text-zinc-400">＋ note</button>`;
+      const dur = fmtDuration(session.started_at, sessionLastSetAt(session));
       return `
-        ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session', backAction: 'back-home', right: unitSwitcherHtml() })}
+        ${headerHtml({ title: fmtDate(session.started_at), subtitle: 'Workout session' + (dur ? ` · <span data-session-duration>${dur}</span>` : ''), backAction: 'back-home', right: unitSwitcherHtml() })}
         ${sNote}
         <div class="space-y-3">${cards}</div>
         <button data-action="open-picker" class="w-full py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-accent-text hover:border-accent hover:text-accent-soft mt-4 mb-4">+ Add exercise</button>
@@ -1763,13 +1785,9 @@
       // The dock lives outside #app, so it's shown/hidden here rather than
       // being re-emitted by the view's HTML. Toggled outside the transition
       // callback so it never joins the root slide.
-      const dock = document.getElementById('rest-dock');
-      if (dock) {
-        dock.classList.toggle('hidden', view !== 'session');
-        // Leaving the session can't strand an open panel or its backdrop.
-        if (view !== 'session') restExpanded = false;
-        renderRestDock();
-      }
+      // renderRestDock() decides visibility too (restDockShown), so a
+      // re-render that opens or closes a form/sheet hides or restores it.
+      renderRestDock();
       const apply = () => {
         const html = view === 'home' ? homeHtml()
           : view === 'session' ? sessionHtml()
@@ -1814,6 +1832,7 @@
             if (kitSheets[kind] && kitSheets[kind].el === el) {
               delete kitSheets[kind];
               onClosed();
+              renderRestDock(); // a drag-dismiss doesn't re-render; bring the rest dock back
             }
           },
         });
@@ -1925,6 +1944,7 @@
           const entryId = +ni.dataset.entry;
           const val = ni.value;
           editingNote = null;
+          renderRestDock(); // the note is closed now — don't wait on the save to bring the dock back
           if (cancelled) { render(); return; }
           try { await api('PATCH', '/api/session-exercises/' + entryId, { note: val }); }
           catch (err) { toast(err.message); }
@@ -1946,6 +1966,7 @@
           const cancelled = sni.dataset.cancel === '1';
           const val = sni.value;
           editingSessionNote = false;
+          renderRestDock();
           if (cancelled) { render(); return; }
           try { await api('PATCH', '/api/sessions/' + session.id, { note: val }); }
           catch (err) { toast(err.message); }
@@ -2663,16 +2684,37 @@
     // Owns the dock's inner markup. Called only on STATE changes (expand,
     // collapse, reset, cancel, target change, idle↔running) — never from
     // tick(), which would re-mount the dial mid-drag.
+    // Anything that takes input and can sit under the floating dock (issue
+    // #49): the inline set form (reps / time fields), the note inputs and
+    // every bottom sheet. One list, read on every render, so a new surface
+    // only has to be added here. The sheets that live on other views are
+    // listed too — harmless there, and they keep the rule view-independent.
+    function restDockBlocked() {
+      return !!(openForm || picker || importSheet || exportSheet || bwEditor || muscleEditor
+        || editingNote !== null || editingSessionNote);
+    }
+    // The dock shows only in a session with nothing blocking it. Hidden is
+    // display:none, so it can't take a tap; the timer itself is untouched —
+    // tick() keeps updating the (invisible) readout and still fires the
+    // rest's-up cue, and the dock comes back at the right time.
+    function restDockShown() {
+      return view === 'session' && !restDockBlocked();
+    }
     function renderRestDock() {
       const dock = document.getElementById('rest-dock');
       const pill = document.getElementById('rest-pill');
       const card = document.getElementById('rest-card');
       const backdrop = document.getElementById('rest-backdrop');
       if (!dock || !pill || !card || !backdrop) return;
-      const open = restExpanded && view === 'session';
+      const shown = restDockShown();
+      dock.classList.toggle('hidden', !shown);
+      // Leaving the session or opening a form can't strand an open panel or
+      // its backdrop — the card comes back collapsed, as a pill.
+      if (!shown) restExpanded = false;
+      const open = restExpanded;
       pill.classList.toggle('hidden', open);
       card.classList.toggle('hidden', !open);
-      backdrop.classList.toggle('hidden', !open || dock.classList.contains('hidden'));
+      backdrop.classList.toggle('hidden', !open);
       // The backdrop needs to sit above app content while open; collapsed,
       // the pill drops back under it (undo pill z-40, error toast z-50).
       dock.classList.toggle('z-40', open);

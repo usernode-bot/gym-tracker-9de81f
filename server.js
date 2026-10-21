@@ -336,6 +336,7 @@ app.get('/api/sessions', wrap(async (req, res) => {
     `SELECT s.id, s.started_at, s.note,
             COUNT(DISTINCT se.id)::int AS exercise_count,
             COUNT(st.id)::int AS set_count,
+            MAX(st.created_at) AS last_set_at,
             (SELECT string_agg(e2.name, ', ' ORDER BY se2.created_at, se2.id)
              FROM session_exercises se2
              JOIN exercises e2 ON e2.id = se2.exercise_id
@@ -963,10 +964,19 @@ app.post('/api/import', wrap(async (req, res) => {
 // displays them (and which unit its weight inputs accept).
 app.get('/api/settings', wrap(async (req, res) => {
   const uid = readUserId(req);
-  const { rows } = await pool.query(
-    'SELECT weight_unit, bodyweight_kg, accent_color FROM user_settings WHERE user_id = $1',
-    [uid]
-  );
+  // The demo seed gives the fake demo user (900001) a bodyweight so the
+  // ?demo=1 strength-level checks have one. The signed-in staging viewer can
+  // BE that user id, and the first-run "Set your bodyweight" prompt must
+  // still show for them — the same reason ensureStagingUserData never copies
+  // user_settings. So outside a ?demo=1 read, the demo user's seeded settings
+  // row is treated as part of the demo dataset, not the viewer's own.
+  const outsideDemo = !IS_STAGING || req.query.demo === '1' || uid !== DEMO_USER_ID;
+  const { rows } = outsideDemo
+    ? await pool.query(
+      'SELECT weight_unit, bodyweight_kg, accent_color FROM user_settings WHERE user_id = $1',
+      [uid]
+    )
+    : { rows: [] };
   res.json({
     weight_unit: rows[0] ? rows[0].weight_unit : 'kg',
     bodyweight_kg: rows[0] && rows[0].bodyweight_kg !== null ? rows[0].bodyweight_kg : null,
