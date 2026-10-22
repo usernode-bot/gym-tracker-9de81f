@@ -249,6 +249,16 @@
       "expectSelector": "#stopwatch"
     },
     {
+      "name": "Set rows offer a 1:30 rest button",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-swipe^=\"set:\"] [data-action=\"start-rest\"]"
+    },
+    {
+      "name": "Set rows still open the set editor",
+      "path": "/?demo=1&session=900002",
+      "expectSelector": "[data-swipe^=\"set:\"] [data-action=\"edit-set\"]"
+    },
+    {
       "name": "Long exercise note renders in full",
       "path": "/?demo=1&session=900002",
       "expectText": "stop two reps short of failure on every working set"

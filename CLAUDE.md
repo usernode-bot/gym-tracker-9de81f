@@ -123,7 +123,10 @@ view. All workout data is strictly private per user.
   no slider): Pointer Events + `setPointerCapture` + `touch-action:
   none`, snapping to 30s on **every** move, claiming
   `unNative.gestures` past a 6px threshold, degrading to plain pointer
-  handling with no kit. `tick()` is a pure readout update (textContent
+  handling with no kit. Each set row's `start-rest` button starts a
+  one-off 90s rest via `restOneOffSec`, read through `restTarget()`, and
+  cleared whenever a rest restarts at, or switches back to, the saved
+  length. It is never persisted. `tick()` is a pure readout update (textContent
   + progress width) so a 1 Hz repaint can't yank the knob mid-drag;
   all structural changes go through `renderRestDock()`.
   `&rest=1` (with `&session=<id>`) arms the timer and opens the card

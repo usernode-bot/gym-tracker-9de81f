@@ -267,6 +267,7 @@
     let restTargetSec = 120;   // rest target in seconds (30..600, multiple of 30) — set below from localStorage
     let restExpanded = false;  // the expanded rest control card is open
     let restNotified = false;  // the end-of-rest cue already fired for this rest
+    let restOneOffSec = null;  // a one-off target for the current rest (the set row's 1:30 button), or null to use restTargetSec
     let toastTimer = null;
     let pendingDelete = null;    // { kind: 'session'|'entry'|'set'|'hist', id, entryIds, timer } — deferred swipe delete in its undo window ('hist' = history row keyed by session id, deleting its entryIds)
     let needsRefreshOnShow = false; // a keepalive flush happened while hidden; reload on return
@@ -310,6 +311,7 @@
       try { localStorage.setItem(REST_TARGET_KEY, String(restTargetSec)); } catch (_) {}
     }
     restTargetSec = getRestTarget();
+    function restTarget() { return restOneOffSec || restTargetSec; }
 
     // ---------- helpers ----------
     function esc(s) {
@@ -619,13 +621,16 @@
         if (openForm && openForm.setId === s.id) return setFormHtml();
         // A set still saving renders in full, just faintly, so the press
         // reads as done without pretending the write has landed.
-        return `<button data-swipe="set:${s.id}" data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" ${s.pending ? 'data-pending-set="1"' : ''} class="relative w-full flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left${s.pending ? ' opacity-60' : ''}">
-            <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
-            <span class="flex-1 min-w-0">
-              <span class="font-mono">${esc(fmtSet(s))}</span>
-              ${s.note ? `<span data-note="set" class="block text-xs italic text-zinc-500 leading-snug whitespace-pre-wrap break-words mt-0.5">${esc(s.note)}</span>` : ''}
-            </span>
-          </button>`;
+        return `<div data-swipe="set:${s.id}" ${s.pending ? 'data-pending-set="1"' : ''} class="relative flex items-center gap-1 rounded-lg bg-zinc-50 dark:bg-zinc-900${s.pending ? ' opacity-60' : ''}">
+            <button data-action="edit-set" data-entry="${en.id}" data-set="${s.id}" class="flex-1 min-w-0 flex items-baseline gap-3 px-2.5 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800/60 text-left">
+              <span class="text-xs ${s.is_drop ? 'text-violet-500 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-600'} w-4 shrink-0">${s.is_drop ? '↘' : setNum}</span>
+              <span class="flex-1 min-w-0">
+                <span class="font-mono">${esc(fmtSet(s))}</span>
+                ${s.note ? `<span data-note="set" class="block text-xs italic text-zinc-500 leading-snug whitespace-pre-wrap break-words mt-0.5">${esc(s.note)}</span>` : ''}
+              </span>
+            </button>
+            <button data-action="start-rest" data-rest-sec="90" aria-label="Rest 1:30" title="Rest 1:30" class="un-touch-target shrink-0 flex items-center gap-1 mr-1 px-2 py-1 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-mono text-zinc-600 dark:text-zinc-300">⏱ ${fmtDur(90)}</button>
+          </div>`;
       }).join('');
       const addArea = openForm && openForm.entryId === en.id && !openForm.setId
         ? setFormHtml()
@@ -1967,6 +1972,7 @@
         setRowValues(type, body)
       );
       en.sets.push(row);
+      restOneOffSec = null; // a rest after logging a set uses the saved length
       stopwatchStart = Date.now(); // logging a set (re)starts the rest timer
       restNotified = false; // ...and this rest gets to announce its own end
       openForm = null; // close on the press; the next "+ Add set" prefills from this set
@@ -2117,8 +2123,9 @@
 
     // ---------- rest timer (client-side only: no schema, no API) ----------
     // stopwatchStart is the epoch ms the current rest began (last logged set,
-    // a manual Reset, or a resumed in-flight rest); restTargetSec is what it
-    // counts down to. Everything else — remaining, overtime, progress — is
+    // a manual Reset, or a resumed in-flight rest); restTarget() is what it
+    // counts down to — restOneOffSec for a set row's 1:30 rest, else the
+    // saved restTargetSec. Everything else — remaining, overtime, progress — is
     // derived, so nothing extra is stored and a clock skew can't drift.
     function seedStopwatch() {
       let newest = 0;
@@ -2129,10 +2136,11 @@
         }
       }
       stopwatchStart = newest && Date.now() - newest < 30 * 60 * 1000 ? newest : null;
+      restOneOffSec = null; // reopening a workout resumes at the saved length
       // A resumed rest can arrive already past its target — render the over
       // state, but don't fire a stale "Rest's up" for a rest that ended
       // before this screen even opened.
-      restNotified = !!stopwatchStart && Date.now() - stopwatchStart >= restTargetSec * 1000;
+      restNotified = !!stopwatchStart && Date.now() - stopwatchStart >= restTarget() * 1000;
     }
     function restElapsed() {
       return stopwatchStart ? Math.floor((Date.now() - stopwatchStart) / 1000) : 0;
@@ -2142,12 +2150,13 @@
     function restReadout() {
       if (!stopwatchStart) return { text: '—:—', label: 'Rest', over: false, pct: 0 };
       const elapsed = restElapsed();
-      const remaining = restTargetSec - elapsed;
+      const target = restTarget();
+      const remaining = target - elapsed;
       return {
         text: remaining > 0 ? fmtDur(remaining) : '+' + fmtDur(-remaining),
         label: remaining > 0 ? 'Rest' : 'Over',
         over: remaining <= 0,
-        pct: Math.min(100, Math.round((elapsed / restTargetSec) * 100)),
+        pct: Math.min(100, Math.round((elapsed / target) * 100)),
       };
     }
     function buzz(pattern) {
@@ -2190,6 +2199,7 @@
       // The rest gives up after an hour, same as before the target existed.
       if (stopwatchStart && restElapsed() >= 3600) {
         stopwatchStart = null;
+        restOneOffSec = null;
         restNotified = false;
         renderRestDock();
         return;
@@ -2218,7 +2228,7 @@
         restNotified = true;
         buzz([40, 60, 40]);
         playRestBeep();
-        toast('Rest’s up — ' + fmtDur(restTargetSec), true);
+        toast('Rest’s up — ' + fmtDur(restTarget()), true);
       }
     }
     // The over state is a colour swap on surfaces tick() is allowed to touch.
@@ -2237,11 +2247,11 @@
     }
     function restKicker() {
       if (!stopwatchStart) return 'Rest timer';
-      return restTargetSec - restElapsed() > 0 ? 'Resting' : 'Over';
+      return restTarget() - restElapsed() > 0 ? 'Resting' : 'Over';
     }
     function restSubText() {
-      if (!stopwatchStart) return 'No rest running · ' + fmtDur(restTargetSec) + ' target';
-      return fmtDur(restElapsed()) + ' elapsed · ' + fmtDur(restTargetSec) + ' target';
+      if (!stopwatchStart) return 'No rest running · ' + fmtDur(restTarget()) + ' target';
+      return fmtDur(restElapsed()) + ' elapsed · ' + fmtDur(restTarget()) + ' target';
     }
     // Repaints everything a target change moves — knob, fill, value, aria,
     // readout — WITHOUT re-rendering the card. Dragging the dial or tapping
@@ -2267,6 +2277,7 @@
     function commitRestTarget(sec) {
       if (clampRestTarget(sec) === restTargetSec) return false;
       setRestTarget(sec);
+      restOneOffSec = null; // moving the dial or ±30s switches to the saved length
       if (restTargetSec - restElapsed() > 0) restNotified = false;
       buzz(10);
       paintRestTarget();
@@ -2914,18 +2925,28 @@
           restExpanded = false;
           renderRestDock();
           break;
+        // A set row's "⏱ 1:30": start a fresh 90s rest without touching the
+        // saved length — the one-off target is used by this rest only.
+        case 'start-rest':
+          stopwatchStart = Date.now();
+          restNotified = false;
+          restOneOffSec = parseInt(el.dataset.restSec || '90', 10);
+          renderRestDock();
+          break;
         // Reset (running) / Start (idle) — what a tap on the pill used to do
         // before it expanded instead. The card stays open so the length can be
         // adjusted right after.
         case 'rest-reset':
           stopwatchStart = Date.now();
           restNotified = false;
+          restOneOffSec = null;
           renderRestDock();
           break;
         case 'rest-cancel':
           if (!stopwatchStart) { restExpanded = false; renderRestDock(); break; }
           stopwatchStart = null;
           restNotified = false;
+          restOneOffSec = null;
           restExpanded = false;
           renderRestDock();
           break;
@@ -3049,6 +3070,7 @@
           if (params.get('rest') === '1') {
             stopwatchStart = Date.now();
             restNotified = false;
+            restOneOffSec = null;
             restExpanded = true;
             renderRestDock();
           }
